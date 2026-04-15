@@ -1,5 +1,4 @@
 use http::HeaderMap;
-use std::sync::Arc;
 
 /// Adds authentication headers to API requests.
 ///
@@ -15,19 +14,5 @@ pub trait AuthProvider: Send + Sync {
 
     fn auth_header_name(&self) -> Option<&'static str> {
         None
-    }
-}
-
-impl<T: AuthProvider + ?Sized> AuthProvider for Arc<T> {
-    fn add_auth_headers(&self, headers: &mut HeaderMap) {
-        self.as_ref().add_auth_headers(headers);
-    }
-
-    fn auth_header_attached(&self) -> bool {
-        self.as_ref().auth_header_attached()
-    }
-
-    fn auth_header_name(&self) -> Option<&'static str> {
-        self.as_ref().auth_header_name()
     }
 }
