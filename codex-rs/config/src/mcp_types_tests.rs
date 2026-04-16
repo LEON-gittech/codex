@@ -336,6 +336,23 @@ fn deserialize_rejects_env_for_http_transport() {
 }
 
 #[test]
+fn deserialize_rejects_remote_environment_for_http_transport() {
+    let err = toml::from_str::<McpServerConfig>(
+        r#"
+            url = "https://example.com"
+            environment = "remote"
+        "#,
+    )
+    .expect_err("should reject remote environment for http transport");
+
+    assert!(
+        err.to_string()
+            .contains("environment = remote is only supported for stdio"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
 fn deserialize_rejects_headers_for_stdio() {
     toml::from_str::<McpServerConfig>(
         r#"

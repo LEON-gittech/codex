@@ -32,6 +32,19 @@ Codex supports a rich set of configuration options. Note that the Rust CLI uses 
 
 Codex CLI functions as an MCP client that allows the Codex CLI and IDE extension to connect to MCP servers on startup. See the [`configuration documentation`](../docs/config.md#connecting-to-mcp-servers) for details.
 
+#### Remote MCP stdio branch notes
+
+The `dev/remote-mcp-executor-stdio` branch is PR `#18088`, stack item `[5/8] Add executor process transport for MCP stdio`, based on `dev/remote-mcp-stdio-runtime`. It is building support for running stdio MCP servers through the executor process API while keeping MCP framing in the orchestrator.
+
+- External MCP stdio semantics are newline-delimited JSON-RPC over server `stdin`/`stdout`, with `stderr` reserved for logging. See the [MCP transport specification](https://mcp.mintlify.app/specification/draft/basic/transports).
+- MCP server config now carries an `environment` field, with `local` as the default and `remote` serialized as `environment = "remote"`.
+- The exec process protocol now distinguishes closed stdin from piped stdin. Normal non-interactive exec keeps stdin closed, while remote MCP stdio can start a pipe-backed process and feed JSON-RPC bytes later through `process/write`.
+- The exec process API now pushes output/lifecycle events (`process/output`, `process/exited`, and `process/closed`) so streaming clients can subscribe instead of polling `process/read` for every chunk.
+- `codex-rs/rmcp-client` now has a `StdioServerLauncher` abstraction. The local launcher preserves the existing child-process path, while the executor launcher starts a server through `ExecBackend` with `tty = false` and piped stdin.
+- The executor-backed transport appends stdio newlines to rmcp JSON-RPC writes, maps executor stdout chunks back into rmcp messages, treats `stderr` as diagnostics, and terminates the executor process when rmcp closes the transport.
+- Current branch wiring still constructs `LocalStdioServerLauncher` in `codex-mcp`, so the executor launcher is present for integration but is not yet selected for configured MCP servers.
+- GitHub showed format, build-test, SDK, and cargo-deny checks passing for this PR, while Bazel and argument-comment-lint jobs were failing when this note was written.
+
 #### MCP server (experimental)
 
 Codex can be launched as an MCP _server_ by running `codex mcp-server`. This allows _other_ MCP clients to use Codex as a tool for another agent.

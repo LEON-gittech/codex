@@ -241,6 +241,9 @@ impl TryFrom<RawMcpServerConfig> for McpServerConfig {
             throw_if_set("streamable_http", "env_vars", env_vars.as_ref())?;
             throw_if_set("streamable_http", "cwd", cwd.as_ref())?;
             throw_if_set("streamable_http", "bearer_token", bearer_token.as_ref())?;
+            if matches!(environment, Some(McpServerEnvironment::Remote)) {
+                return Err("environment = remote is only supported for stdio".to_string());
+            }
             McpServerTransportConfig::StreamableHttp {
                 url,
                 bearer_token_env_var,
