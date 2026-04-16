@@ -74,6 +74,7 @@ use codex_hooks::HookResult;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
 use codex_login::default_client::originator;
@@ -331,7 +332,7 @@ use crate::windows_sandbox::WindowsSandboxLevelExt;
 use codex_async_utils::OrCancelExt;
 use codex_git_utils::get_git_repo_root;
 use codex_mcp::compute_auth_statuses;
-use codex_mcp::with_codex_apps_mcp;
+use codex_mcp::with_codex_apps_mcp_with_authorization_header;
 use codex_otel::SessionTelemetry;
 use codex_otel::THREAD_STARTED_METRIC;
 use codex_otel::TelemetryAuthMode;
@@ -4582,7 +4583,24 @@ impl Session {
             .mcp_manager
             .tool_plugin_provenance(config.as_ref())
             .await;
-        let mcp_servers = with_codex_apps_mcp(mcp_servers, auth.as_ref(), &mcp_config);
+        let background_authorization_header_value =
+            if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
+                BackgroundAgentTaskManager::new(
+                    Arc::clone(&self.services.auth_manager),
+                    config.chatgpt_base_url.clone(),
+                    turn_context.session_source.clone(),
+                )
+                .authorization_header_value_or_bearer(auth)
+                .await
+            } else {
+                None
+            };
+        let mcp_servers = with_codex_apps_mcp_with_authorization_header(
+            mcp_servers,
+            auth.as_ref(),
+            &mcp_config,
+            background_authorization_header_value.as_deref(),
+        );
         let auth_statuses = compute_auth_statuses(mcp_servers.iter(), store_mode).await;
         let sandbox_state = SandboxState {
             sandbox_policy: turn_context.sandbox_policy.get().clone(),
@@ -4983,6 +5001,7 @@ mod handlers {
     use crate::realtime_context::REALTIME_TURN_TOKEN_BUDGET;
     use crate::realtime_context::truncate_realtime_text_to_token_budget;
     use codex_features::Feature;
+    use codex_login::BackgroundAgentTaskManager;
     use codex_utils_absolute_path::AbsolutePathBuf;
 
     use crate::review_prompts::resolve_review_request;
@@ -5008,6 +5027,7 @@ mod handlers {
     use codex_protocol::protocol::ReviewDecision;
     use codex_protocol::protocol::ReviewRequest;
     use codex_protocol::protocol::RolloutItem;
+    use codex_protocol::protocol::SessionSource;
     use codex_protocol::protocol::SkillErrorInfo;
     use codex_protocol::protocol::SkillsListEntry;
     use codex_protocol::protocol::ThreadMemoryMode;
@@ -5433,10 +5453,26 @@ mod handlers {
     pub async fn list_mcp_tools(sess: &Session, config: &Arc<Config>, sub_id: String) {
         let mcp_connection_manager = sess.services.mcp_connection_manager.read().await;
         let auth = sess.services.auth_manager.auth().await;
+        let background_authorization_header_value =
+            if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
+                BackgroundAgentTaskManager::new(
+                    Arc::clone(&sess.services.auth_manager),
+                    config.chatgpt_base_url.clone(),
+                    SessionSource::Cli,
+                )
+                .authorization_header_value_or_bearer(auth)
+                .await
+            } else {
+                None
+            };
         let mcp_servers = sess
             .services
             .mcp_manager
-            .effective_servers(config, auth.as_ref())
+            .effective_servers_with_authorization_header(
+                config,
+                auth.as_ref(),
+                background_authorization_header_value.as_deref(),
+            )
             .await;
         let snapshot = collect_mcp_snapshot_from_manager(
             &mcp_connection_manager,

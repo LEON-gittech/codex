@@ -18,7 +18,9 @@ use axum::http::HeaderValue;
 use base64::Engine;
 use codex_core::util::backoff;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::UnauthorizedRecovery;
+use codex_protocol::protocol::SessionSource;
 use codex_state::StateRuntime;
 use codex_utils_rustls_provider::ensure_rustls_crypto_provider;
 use futures::SinkExt;
@@ -647,11 +649,7 @@ fn build_remote_control_websocket_request(
         "x-codex-protocol-version",
         REMOTE_CONTROL_PROTOCOL_VERSION,
     )?;
-    set_remote_control_header(
-        headers,
-        "authorization",
-        &format!("Bearer {}", auth.bearer_token),
-    )?;
+    set_remote_control_header(headers, "authorization", &auth.authorization_header_value)?;
     set_remote_control_header(headers, REMOTE_CONTROL_ACCOUNT_ID_HEADER, &auth.account_id)?;
     if let Some(subscribe_cursor) = subscribe_cursor {
         set_remote_control_header(
@@ -665,6 +663,7 @@ fn build_remote_control_websocket_request(
 
 pub(crate) async fn load_remote_control_auth(
     auth_manager: &Arc<AuthManager>,
+    remote_control_base_url: &str,
 ) -> io::Result<RemoteControlConnectionAuth> {
     let mut reloaded = false;
     let auth = loop {
@@ -697,8 +696,22 @@ pub(crate) async fn load_remote_control_auth(
         ));
     }
 
+    let authorization_header_value = BackgroundAgentTaskManager::new(
+        Arc::clone(auth_manager),
+        remote_control_base_url.to_string(),
+        SessionSource::Cli,
+    )
+    .authorization_header_value_or_bearer(&auth)
+    .await
+    .ok_or_else(|| {
+        io::Error::new(
+            ErrorKind::PermissionDenied,
+            "remote control requires ChatGPT authentication",
+        )
+    })?;
+
     Ok(RemoteControlConnectionAuth {
-        bearer_token: auth.get_token().map_err(io::Error::other)?,
+        authorization_header_value,
         account_id: auth.get_account_id().ok_or_else(|| {
             io::Error::new(
                 ErrorKind::WouldBlock,
@@ -722,7 +735,7 @@ pub(super) async fn connect_remote_control_websocket(
 )> {
     ensure_rustls_crypto_provider();
 
-    let auth = load_remote_control_auth(auth_manager).await?;
+    let auth = load_remote_control_auth(auth_manager, &remote_control_target.enroll_url).await?;
     let enrollment_account_id = enrollment.as_ref().map(|enrollment| &enrollment.account_id);
     if enrollment_account_id.is_some_and(|account_id| account_id != &auth.account_id) {
         info!(

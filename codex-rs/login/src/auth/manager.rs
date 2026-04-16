@@ -21,6 +21,7 @@ use codex_protocol::config_types::ForcedLoginMethod;
 use codex_protocol::config_types::ModelProviderAuthInfo;
 
 use super::external_bearer::BearerTokenRefresher;
+pub use crate::auth::storage::AgentBackgroundTaskAuthRecord;
 pub use crate::auth::storage::AgentIdentityAuthRecord;
 pub use crate::auth::storage::AuthDotJson;
 use crate::auth::storage::AuthStorageBackend;
@@ -360,7 +361,7 @@ impl CodexAuth {
             .filter(|identity| identity.workspace_id == workspace_id)
     }
 
-    pub fn set_agent_identity(&self, record: AgentIdentityAuthRecord) -> std::io::Result<()> {
+    pub fn set_agent_identity(&self, mut record: AgentIdentityAuthRecord) -> std::io::Result<()> {
         let (state, storage) = match self {
             Self::Chatgpt(auth) => (&auth.state, &auth.storage),
             Self::ChatgptAuthTokens(auth) => (&auth.state, &auth.storage),
@@ -373,6 +374,13 @@ impl CodexAuth {
         let mut auth = guard
             .clone()
             .ok_or_else(|| std::io::Error::other("auth data is not available"))?;
+        if record.background_task.is_none()
+            && let Some(existing) = auth.agent_identity.as_ref()
+            && existing.workspace_id == record.workspace_id
+            && existing.agent_runtime_id == record.agent_runtime_id
+        {
+            record.background_task = existing.background_task.clone();
+        }
         auth.agent_identity = Some(record);
         storage.save(&auth)?;
         *guard = Some(auth);

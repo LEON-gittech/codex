@@ -6,6 +6,8 @@ use reqwest::header::HeaderMap;
 
 use codex_core::config::Config;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
+use codex_protocol::protocol::SessionSource;
 
 pub fn set_user_agent_suffix(suffix: &str) {
     if let Ok(mut guard) = codex_login::default_client::USER_AGENT_SUFFIX.lock() {
@@ -86,17 +88,26 @@ pub async fn build_chatgpt_headers() -> HeaderMap {
     );
     if let Some(am) = load_auth_manager().await
         && let Some(auth) = am.auth().await
-        && let Ok(tok) = auth.get_token()
-        && !tok.is_empty()
     {
-        let v = format!("Bearer {tok}");
-        if let Ok(hv) = HeaderValue::from_str(&v) {
+        let am = std::sync::Arc::new(am);
+        let base_url = normalize_base_url(
+            &std::env::var("CODEX_CLOUD_TASKS_BASE_URL")
+                .unwrap_or_else(|_| "https://chatgpt.com/backend-api".to_string()),
+        );
+        let background_agent_task_manager =
+            BackgroundAgentTaskManager::new(am, base_url, SessionSource::Cli);
+        if let Some(authorization_header_value) = background_agent_task_manager
+            .authorization_header_value_or_bearer(&auth)
+            .await
+            && let Ok(hv) = HeaderValue::from_str(&authorization_header_value)
+        {
             headers.insert(AUTHORIZATION, hv);
         }
-        if let Some(acc) = auth
-            .get_account_id()
-            .or_else(|| extract_chatgpt_account_id(&tok))
-            && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
+        if let Some(acc) = auth.get_account_id().or_else(|| {
+            auth.get_token()
+                .ok()
+                .and_then(|token| extract_chatgpt_account_id(&token))
+        }) && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")
             && let Ok(hv) = HeaderValue::from_str(&acc)
         {
             headers.insert(name, hv);

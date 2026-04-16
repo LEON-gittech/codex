@@ -25,8 +25,10 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginTelemetryMetadata;
+use codex_protocol::protocol::SessionSource;
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -55,10 +57,21 @@ impl AnalyticsEventsQueue {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
         tokio::spawn(async move {
             let mut reducer = AnalyticsReducer::default();
+            let background_agent_task_manager = BackgroundAgentTaskManager::new(
+                Arc::clone(&auth_manager),
+                base_url.clone(),
+                SessionSource::Cli,
+            );
             while let Some(input) = receiver.recv().await {
                 let mut events = Vec::new();
                 reducer.ingest(input, &mut events).await;
-                send_track_events(&auth_manager, &base_url, events).await;
+                send_track_events(
+                    &auth_manager,
+                    &background_agent_task_manager,
+                    &base_url,
+                    events,
+                )
+                .await;
             }
         });
         Self {
@@ -290,6 +303,7 @@ impl AnalyticsEventsClient {
 
 async fn send_track_events(
     auth_manager: &AuthManager,
+    background_agent_task_manager: &BackgroundAgentTaskManager,
     base_url: &str,
     events: Vec<TrackEventRequest>,
 ) {
@@ -302,9 +316,11 @@ async fn send_track_events(
     if !auth.is_chatgpt_auth() {
         return;
     }
-    let access_token = match auth.get_token() {
-        Ok(token) => token,
-        Err(_) => return,
+    let Some(authorization_header_value) = background_agent_task_manager
+        .authorization_header_value_or_bearer(&auth)
+        .await
+    else {
+        return;
     };
     let Some(account_id) = auth.get_account_id() else {
         return;
@@ -317,7 +333,7 @@ async fn send_track_events(
     let response = create_client()
         .post(&url)
         .timeout(ANALYTICS_EVENTS_TIMEOUT)
-        .bearer_auth(&access_token)
+        .header("authorization", authorization_header_value)
         .header("chatgpt-account-id", &account_id)
         .header("Content-Type", "application/json")
         .json(&payload)

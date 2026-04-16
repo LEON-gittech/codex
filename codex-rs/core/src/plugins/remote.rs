@@ -1,7 +1,10 @@
 use crate::config::Config;
+use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
 use codex_protocol::protocol::Product;
+use codex_protocol::protocol::SessionSource;
 use serde::Deserialize;
 use std::time::Duration;
 use url::Url;
@@ -130,13 +133,13 @@ pub(crate) async fn fetch_remote_plugin_status(
     let base_url = config.chatgpt_base_url.trim_end_matches('/');
     let url = format!("{base_url}/plugins/list");
     let client = build_reqwest_client();
-    let token = auth
-        .get_token()
+    let authorization_header_value = authorization_header_value_for_auth(config, auth)
+        .await
         .map_err(RemotePluginFetchError::AuthToken)?;
     let mut request = client
         .get(&url)
         .timeout(REMOTE_PLUGIN_FETCH_TIMEOUT)
-        .bearer_auth(token);
+        .header("authorization", authorization_header_value);
     if let Some(account_id) = auth.get_account_id() {
         request = request.header("chatgpt-account-id", account_id);
     }
@@ -177,10 +180,10 @@ pub async fn fetch_remote_featured_plugin_ids(
         .timeout(REMOTE_FEATURED_PLUGIN_FETCH_TIMEOUT);
 
     if let Some(auth) = auth.filter(|auth| auth.is_chatgpt_auth()) {
-        let token = auth
-            .get_token()
+        let authorization_header_value = authorization_header_value_for_auth(config, auth)
+            .await
             .map_err(RemotePluginFetchError::AuthToken)?;
-        request = request.bearer_auth(token);
+        request = request.header("authorization", authorization_header_value);
         if let Some(account_id) = auth.get_account_id() {
             request = request.header("chatgpt-account-id", account_id);
         }
@@ -246,13 +249,13 @@ async fn post_remote_plugin_mutation(
     let auth = ensure_chatgpt_auth(auth)?;
     let url = remote_plugin_mutation_url(config, plugin_id, action)?;
     let client = build_reqwest_client();
-    let token = auth
-        .get_token()
+    let authorization_header_value = authorization_header_value_for_auth(config, auth)
+        .await
         .map_err(RemotePluginMutationError::AuthToken)?;
     let mut request = client
         .post(url.clone())
         .timeout(REMOTE_PLUGIN_MUTATION_TIMEOUT)
-        .bearer_auth(token);
+        .header("authorization", authorization_header_value);
     if let Some(account_id) = auth.get_account_id() {
         request = request.header("chatgpt-account-id", account_id);
     }
@@ -291,6 +294,26 @@ async fn post_remote_plugin_mutation(
     }
 
     Ok(parsed)
+}
+
+async fn authorization_header_value_for_auth(
+    config: &Config,
+    auth: &CodexAuth,
+) -> std::io::Result<String> {
+    let auth_manager =
+        AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false);
+    if let Some(authorization_header_value) = BackgroundAgentTaskManager::new(
+        auth_manager,
+        config.chatgpt_base_url.clone(),
+        SessionSource::Cli,
+    )
+    .authorization_header_value_or_bearer(auth)
+    .await
+    {
+        Ok(authorization_header_value)
+    } else {
+        auth.get_token().map(|token| format!("Bearer {token}"))
+    }
 }
 
 fn remote_plugin_mutation_url(

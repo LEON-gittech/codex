@@ -261,6 +261,7 @@ use codex_feedback::FeedbackUploadOptions;
 use codex_git_utils::git_diff_to_remote;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
 use codex_login::ServerOptions as LoginServerOptions;
@@ -273,9 +274,9 @@ use codex_login::request_device_code;
 use codex_login::run_login_server;
 use codex_mcp::McpServerStatusSnapshot;
 use codex_mcp::McpSnapshotDetail;
-use codex_mcp::collect_mcp_server_status_snapshot_with_detail;
+use codex_mcp::collect_mcp_server_status_snapshot_with_detail_and_authorization_header;
 use codex_mcp::discover_supported_scopes;
-use codex_mcp::effective_mcp_servers;
+use codex_mcp::effective_mcp_servers_with_authorization_header;
 use codex_mcp::resolve_oauth_scopes;
 use codex_models_manager::collaboration_mode_presets::CollaborationModesConfig;
 use codex_protocol::ThreadId;
@@ -1905,12 +1906,28 @@ impl CodexMessageProcessor {
             });
         }
 
-        let client = BackendClient::from_auth(self.config.chatgpt_base_url.clone(), &auth)
+        let authorization_header_value = BackgroundAgentTaskManager::new(
+            Arc::clone(&self.auth_manager),
+            self.config.chatgpt_base_url.clone(),
+            self.thread_manager.session_source(),
+        )
+        .authorization_header_value_or_bearer(&auth)
+        .await;
+        let mut client = BackendClient::new(self.config.chatgpt_base_url.clone())
+            .map(|client| {
+                client.with_user_agent(codex_login::default_client::get_codex_user_agent())
+            })
             .map_err(|err| JSONRPCErrorError {
                 code: INTERNAL_ERROR_CODE,
                 message: format!("failed to construct backend client: {err}"),
                 data: None,
             })?;
+        if let Some(authorization_header_value) = authorization_header_value {
+            client = client.with_authorization_header_value(authorization_header_value);
+        }
+        if let Some(account_id) = auth.get_account_id() {
+            client = client.with_chatgpt_account_id(account_id);
+        }
 
         let snapshots = client
             .get_rate_limits_many()
@@ -5597,11 +5614,20 @@ impl CodexMessageProcessor {
         let mcp_config = config
             .to_mcp_config(self.thread_manager.plugins_manager().as_ref())
             .await;
-        let auth = self.auth_manager.auth().await;
+        let auth_manager = Arc::clone(&self.auth_manager);
+        let auth = auth_manager.auth().await;
 
         tokio::spawn(async move {
-            Self::list_mcp_server_status_task(outgoing, request, params, config, mcp_config, auth)
-                .await;
+            Self::list_mcp_server_status_task(
+                outgoing,
+                request,
+                params,
+                config,
+                mcp_config,
+                auth_manager,
+                auth,
+            )
+            .await;
         });
     }
 
@@ -5611,6 +5637,7 @@ impl CodexMessageProcessor {
         params: ListMcpServerStatusParams,
         config: Config,
         mcp_config: codex_mcp::McpConfig,
+        auth_manager: Arc<AuthManager>,
         auth: Option<CodexAuth>,
     ) {
         let detail = match params.detail.unwrap_or(McpServerStatusDetail::Full) {
@@ -5618,15 +5645,32 @@ impl CodexMessageProcessor {
             McpServerStatusDetail::ToolsAndAuthOnly => McpSnapshotDetail::ToolsAndAuthOnly,
         };
 
-        let snapshot = collect_mcp_server_status_snapshot_with_detail(
+        let background_authorization_header_value =
+            if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
+                BackgroundAgentTaskManager::new(
+                    auth_manager,
+                    config.chatgpt_base_url.clone(),
+                    codex_protocol::protocol::SessionSource::Cli,
+                )
+                .authorization_header_value_or_bearer(auth)
+                .await
+            } else {
+                None
+            };
+        let snapshot = collect_mcp_server_status_snapshot_with_detail_and_authorization_header(
             &mcp_config,
             auth.as_ref(),
             request_id.request_id.to_string(),
             detail,
+            background_authorization_header_value.as_deref(),
         )
         .await;
 
-        let effective_servers = effective_mcp_servers(&mcp_config, auth.as_ref());
+        let effective_servers = effective_mcp_servers_with_authorization_header(
+            &mcp_config,
+            auth.as_ref(),
+            background_authorization_header_value.as_deref(),
+        );
         let McpServerStatusSnapshot {
             tools_by_server,
             resources,

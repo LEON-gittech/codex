@@ -60,7 +60,7 @@ pub(crate) async fn start_remote_control(
         None
     };
     if initial_enabled {
-        validate_remote_control_auth(&auth_manager).await?;
+        validate_remote_control_auth(&auth_manager, &remote_control_url).await?;
     }
 
     let (enabled_tx, enabled_rx) = watch::channel(initial_enabled);
@@ -88,8 +88,9 @@ pub(crate) async fn start_remote_control(
 
 pub(crate) async fn validate_remote_control_auth(
     auth_manager: &Arc<AuthManager>,
+    remote_control_url: &str,
 ) -> io::Result<()> {
-    match load_remote_control_auth(auth_manager).await {
+    match load_remote_control_auth(auth_manager, remote_control_url).await {
         Ok(_) => Ok(()),
         Err(err) if err.kind() == io::ErrorKind::WouldBlock => Ok(()),
         Err(err) => Err(err),

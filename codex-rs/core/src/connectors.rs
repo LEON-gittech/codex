@@ -18,6 +18,7 @@ use codex_connectors::AllConnectorsCacheKey;
 use codex_connectors::DirectoryListResponse;
 use codex_login::token_data::TokenData;
 use codex_protocol::protocol::SandboxPolicy;
+use codex_protocol::protocol::SessionSource;
 use codex_tools::DiscoverableTool;
 use rmcp::model::ToolAnnotations;
 use serde::Deserialize;
@@ -36,6 +37,7 @@ use codex_config::types::AppsConfigToml;
 use codex_config::types::ToolSuggestDiscoverableType;
 use codex_features::Feature;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::create_client;
 use codex_login::default_client::is_first_party_chat_originator;
@@ -47,7 +49,7 @@ use codex_mcp::ToolInfo;
 use codex_mcp::ToolPluginProvenance;
 use codex_mcp::codex_apps_tools_cache_key;
 use codex_mcp::compute_auth_statuses;
-use codex_mcp::with_codex_apps_mcp;
+use codex_mcp::with_codex_apps_mcp_with_authorization_header;
 
 pub use codex_connectors::CONNECTORS_CACHE_TTL;
 const CONNECTORS_READY_TIMEOUT_ON_EMPTY_TOOLS: Duration = Duration::from_secs(30);
@@ -213,8 +215,25 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
         });
     }
 
+    let background_authorization_header_value =
+        if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
+            BackgroundAgentTaskManager::new(
+                auth_manager,
+                config.chatgpt_base_url.clone(),
+                SessionSource::Cli,
+            )
+            .authorization_header_value_or_bearer(auth)
+            .await
+        } else {
+            None
+        };
     let mcp_config = config.to_mcp_config(plugins_manager.as_ref()).await;
-    let mcp_servers = with_codex_apps_mcp(HashMap::new(), auth.as_ref(), &mcp_config);
+    let mcp_servers = with_codex_apps_mcp_with_authorization_header(
+        HashMap::new(),
+        auth.as_ref(),
+        &mcp_config,
+        background_authorization_header_value.as_deref(),
+    );
     if mcp_servers.is_empty() {
         return Ok(AccessibleConnectorsStatus {
             connectors: Vec::new(),
@@ -444,6 +463,21 @@ async fn list_directory_connectors_for_tool_suggest_with_auth(
     };
     let access_token = token_data.access_token.clone();
     let account_id = account_id.to_string();
+    let authorization_header_value = {
+        let auth_manager =
+            AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false);
+        match auth {
+            Some(auth) if auth.is_chatgpt_auth() => BackgroundAgentTaskManager::new(
+                auth_manager,
+                config.chatgpt_base_url.clone(),
+                SessionSource::Cli,
+            )
+            .authorization_header_value_or_bearer(auth)
+            .await
+            .unwrap_or_else(|| format!("Bearer {access_token}")),
+            _ => format!("Bearer {access_token}"),
+        }
+    };
     let is_workspace_account = token_data.id_token.is_workspace_account();
     let cache_key = AllConnectorsCacheKey::new(
         config.chatgpt_base_url.clone(),
@@ -457,13 +491,13 @@ async fn list_directory_connectors_for_tool_suggest_with_auth(
         is_workspace_account,
         /*force_refetch*/ false,
         |path| {
-            let access_token = access_token.clone();
+            let authorization_header_value = authorization_header_value.clone();
             let account_id = account_id.clone();
             async move {
-                chatgpt_get_request_with_token::<DirectoryListResponse>(
+                chatgpt_get_request_with_authorization_header::<DirectoryListResponse>(
                     config,
                     path,
-                    access_token.as_str(),
+                    authorization_header_value.as_str(),
                     account_id.as_str(),
                 )
                 .await
@@ -473,17 +507,17 @@ async fn list_directory_connectors_for_tool_suggest_with_auth(
     .await
 }
 
-async fn chatgpt_get_request_with_token<T: DeserializeOwned>(
+async fn chatgpt_get_request_with_authorization_header<T: DeserializeOwned>(
     config: &Config,
     path: String,
-    access_token: &str,
+    authorization_header_value: &str,
     account_id: &str,
 ) -> anyhow::Result<T> {
     let client = create_client();
     let url = format!("{}{}", config.chatgpt_base_url, path);
     let response = client
         .get(&url)
-        .bearer_auth(access_token)
+        .header("authorization", authorization_header_value)
         .header("chatgpt-account-id", account_id)
         .header("Content-Type", "application/json")
         .timeout(DIRECTORY_CONNECTORS_TIMEOUT)

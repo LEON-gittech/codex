@@ -101,7 +101,7 @@ impl PathStyle {
 pub struct Client {
     base_url: String,
     http: reqwest::Client,
-    bearer_token: Option<String>,
+    authorization_header_value: Option<String>,
     user_agent: Option<HeaderValue>,
     chatgpt_account_id: Option<String>,
     path_style: PathStyle,
@@ -126,7 +126,7 @@ impl Client {
         Ok(Self {
             base_url,
             http,
-            bearer_token: None,
+            authorization_header_value: None,
             user_agent: None,
             chatgpt_account_id: None,
             path_style,
@@ -145,7 +145,12 @@ impl Client {
     }
 
     pub fn with_bearer_token(mut self, token: impl Into<String>) -> Self {
-        self.bearer_token = Some(token.into());
+        self.authorization_header_value = Some(format!("Bearer {}", token.into()));
+        self
+    }
+
+    pub fn with_authorization_header_value(mut self, value: impl Into<String>) -> Self {
+        self.authorization_header_value = Some(value.into());
         self
     }
 
@@ -173,11 +178,10 @@ impl Client {
         } else {
             h.insert(USER_AGENT, HeaderValue::from_static("codex-cli"));
         }
-        if let Some(token) = &self.bearer_token {
-            let value = format!("Bearer {token}");
-            if let Ok(hv) = HeaderValue::from_str(&value) {
-                h.insert(AUTHORIZATION, hv);
-            }
+        if let Some(value) = &self.authorization_header_value
+            && let Ok(hv) = HeaderValue::from_str(value)
+        {
+            h.insert(AUTHORIZATION, hv);
         }
         if let Some(acc) = &self.chatgpt_account_id
             && let Ok(name) = HeaderName::from_bytes(b"ChatGPT-Account-Id")

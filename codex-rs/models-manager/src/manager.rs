@@ -3,6 +3,7 @@ use crate::collaboration_mode_presets::CollaborationModesConfig;
 use crate::collaboration_mode_presets::builtin_collaboration_mode_presets;
 use crate::config::ModelsManagerConfig;
 use crate::model_info;
+use codex_api::CoreAuthProvider;
 use codex_api::ModelsClient;
 use codex_api::RequestTelemetry;
 use codex_api::ReqwestTransport;
@@ -13,6 +14,7 @@ use codex_feedback::FeedbackRequestTags;
 use codex_feedback::emit_feedback_request_tags_with_auth_env;
 use codex_login::AuthEnvTelemetry;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::auth_provider_from_auth;
 use codex_login::collect_auth_env_telemetry;
@@ -26,6 +28,7 @@ use codex_protocol::error::Result as CoreResult;
 use codex_protocol::openai_models::ModelInfo;
 use codex_protocol::openai_models::ModelPreset;
 use codex_protocol::openai_models::ModelsResponse;
+use codex_protocol::protocol::SessionSource;
 use codex_response_debug_context::extract_response_debug_context;
 use codex_response_debug_context::telemetry_transport_error_message;
 use http::HeaderMap;
@@ -435,7 +438,22 @@ impl ModelsManager {
         let auth = self.auth_manager.auth().await;
         let auth_mode = auth.as_ref().map(CodexAuth::auth_mode);
         let api_provider = self.provider.to_api_provider(auth_mode)?;
-        let api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        let mut api_auth = auth_provider_from_auth(auth.clone(), &self.provider)?;
+        if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth())
+            && provider_uses_codex_login_auth(&self.provider)
+            && let Some(authorization_header_value) = BackgroundAgentTaskManager::new(
+                Arc::clone(&self.auth_manager),
+                api_provider.base_url.clone(),
+                SessionSource::Cli,
+            )
+            .authorization_header_value_or_bearer(auth)
+            .await
+        {
+            api_auth = CoreAuthProvider::from_authorization_header_value(
+                Some(authorization_header_value),
+                auth.get_account_id(),
+            );
+        }
         let auth_env = collect_auth_env_telemetry(
             &self.provider,
             self.auth_manager.codex_api_key_env_enabled(),
@@ -579,6 +597,10 @@ impl ModelsManager {
         };
         Self::construct_model_info_from_candidates(model, candidates, config)
     }
+}
+
+fn provider_uses_codex_login_auth(provider: &ModelProviderInfo) -> bool {
+    provider.env_key.is_none() && provider.experimental_bearer_token.is_none()
 }
 
 #[cfg(test)]

@@ -22,9 +22,11 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigRequirementsToml;
 use codex_core::util::backoff;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
 use codex_protocol::account::PlanType;
+use codex_protocol::protocol::SessionSource;
 use hmac::Hmac;
 use hmac::Mac;
 use serde::Deserialize;
@@ -195,11 +197,19 @@ trait RequirementsFetcher: Send + Sync {
 
 struct BackendRequirementsFetcher {
     base_url: String,
+    background_agent_task_manager: BackgroundAgentTaskManager,
 }
 
 impl BackendRequirementsFetcher {
-    fn new(base_url: String) -> Self {
-        Self { base_url }
+    fn new(auth_manager: Arc<AuthManager>, base_url: String) -> Self {
+        Self {
+            background_agent_task_manager: BackgroundAgentTaskManager::new(
+                auth_manager,
+                base_url.clone(),
+                SessionSource::Cli,
+            ),
+            base_url,
+        }
     }
 }
 
@@ -209,7 +219,14 @@ impl RequirementsFetcher for BackendRequirementsFetcher {
         &self,
         auth: &CodexAuth,
     ) -> Result<Option<String>, FetchAttemptError> {
-        let client = BackendClient::from_auth(self.base_url.clone(), auth)
+        let authorization_header_value = self
+            .background_agent_task_manager
+            .authorization_header_value_or_bearer(auth)
+            .await;
+        let mut client = BackendClient::new(self.base_url.clone())
+            .map(|client| {
+                client.with_user_agent(codex_login::default_client::get_codex_user_agent())
+            })
             .inspect_err(|err| {
                 tracing::warn!(
                     error = %err,
@@ -217,6 +234,12 @@ impl RequirementsFetcher for BackendRequirementsFetcher {
                 );
             })
             .map_err(|_| FetchAttemptError::Retryable(RetryableFailureKind::BackendClientInit))?;
+        if let Some(authorization_header_value) = authorization_header_value {
+            client = client.with_authorization_header_value(authorization_header_value);
+        }
+        if let Some(account_id) = auth.get_account_id() {
+            client = client.with_chatgpt_account_id(account_id);
+        }
 
         let response = client
             .get_config_requirements_file()
@@ -693,8 +716,11 @@ pub fn cloud_requirements_loader(
     codex_home: PathBuf,
 ) -> CloudRequirementsLoader {
     let service = CloudRequirementsService::new(
-        auth_manager,
-        Arc::new(BackendRequirementsFetcher::new(chatgpt_base_url)),
+        auth_manager.clone(),
+        Arc::new(BackendRequirementsFetcher::new(
+            auth_manager,
+            chatgpt_base_url,
+        )),
         codex_home,
         CLOUD_REQUIREMENTS_TIMEOUT,
     );

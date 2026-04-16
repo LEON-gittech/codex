@@ -1,3 +1,4 @@
+pub mod agent_identity;
 pub mod api_bridge;
 pub mod auth;
 pub mod auth_env_telemetry;
@@ -19,7 +20,10 @@ pub use server::ServerOptions;
 pub use server::ShutdownHandle;
 pub use server::run_login_server;
 
+pub use agent_identity::BackgroundAgentTaskManager;
+pub use agent_identity::cached_background_agent_task_authorization_header_value;
 pub use api_bridge::auth_provider_from_auth;
+pub use auth::AgentBackgroundTaskAuthRecord;
 pub use auth::AgentIdentityAuthRecord;
 pub use auth::AuthConfig;
 pub use auth::AuthDotJson;

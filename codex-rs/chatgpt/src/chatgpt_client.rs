@@ -1,5 +1,8 @@
 use codex_core::config::Config;
+use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskManager;
 use codex_login::default_client::create_client;
+use codex_protocol::protocol::SessionSource;
 
 use crate::chatgpt_token::get_chatgpt_token_data;
 use crate::chatgpt_token::init_chatgpt_token_from_auth;
@@ -31,6 +34,22 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
 
     let token =
         get_chatgpt_token_data().ok_or_else(|| anyhow::anyhow!("ChatGPT token not available"))?;
+    let auth_manager = AuthManager::shared(
+        config.codex_home.to_path_buf(),
+        /*enable_codex_api_key_env*/ false,
+        config.cli_auth_credentials_store_mode,
+    );
+    let authorization_header_value = match auth_manager.auth().await {
+        Some(auth) if auth.is_chatgpt_auth() => BackgroundAgentTaskManager::new(
+            auth_manager,
+            config.chatgpt_base_url.clone(),
+            SessionSource::Cli,
+        )
+        .authorization_header_value_or_bearer(&auth)
+        .await
+        .unwrap_or_else(|| format!("Bearer {}", token.access_token)),
+        _ => format!("Bearer {}", token.access_token),
+    };
 
     let account_id = token.account_id.ok_or_else(|| {
         anyhow::anyhow!("ChatGPT account ID not available, please re-run `codex login`")
@@ -38,7 +57,7 @@ pub(crate) async fn chatgpt_get_request_with_timeout<T: DeserializeOwned>(
 
     let mut request = client
         .get(&url)
-        .bearer_auth(&token.access_token)
+        .header("authorization", authorization_header_value)
         .header("chatgpt-account-id", account_id?)
         .header("Content-Type", "application/json");
 
