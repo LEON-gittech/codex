@@ -2747,6 +2747,7 @@ dependencies = [
  "dunce",
  "libc",
  "pretty_assertions",
+ "regex-lite",
  "serde_json",
  "tempfile",
  "tokio",
