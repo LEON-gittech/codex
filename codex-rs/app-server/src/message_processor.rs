@@ -68,6 +68,7 @@ use codex_exec_server::EnvironmentManager;
 use codex_features::Feature;
 use codex_feedback::CodexFeedback;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::auth::ExternalAuth;
 use codex_login::auth::ExternalAuthRefreshContext;
 use codex_login::auth::ExternalAuthRefreshReason;
@@ -263,11 +264,15 @@ impl MessageProcessor {
         auth_manager.set_external_auth(Arc::new(ExternalAuthRefreshBridge {
             outgoing: outgoing.clone(),
         }));
-        let analytics_events_client = AnalyticsEventsClient::new(
-            Arc::clone(&auth_manager),
-            config.chatgpt_base_url.trim_end_matches('/').to_string(),
-            config.analytics_enabled,
-        );
+        let analytics_events_client =
+            AnalyticsEventsClient::new_with_background_agent_task_auth_mode(
+                Arc::clone(&auth_manager),
+                config.chatgpt_base_url.trim_end_matches('/').to_string(),
+                config.analytics_enabled,
+                BackgroundAgentTaskAuthMode::from_feature_enabled(
+                    config.features.enabled(Feature::UseAgentIdentity),
+                ),
+            );
         let thread_manager = Arc::new(ThreadManager::new(
             config.as_ref(),
             auth_manager.clone(),

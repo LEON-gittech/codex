@@ -22,6 +22,7 @@ use codex_core::config_loader::CloudRequirementsLoader;
 use codex_core::config_loader::ConfigRequirementsToml;
 use codex_core::util::backoff;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::RefreshTokenError;
@@ -201,12 +202,17 @@ struct BackendRequirementsFetcher {
 }
 
 impl BackendRequirementsFetcher {
-    fn new(auth_manager: Arc<AuthManager>, base_url: String) -> Self {
+    fn new(
+        auth_manager: Arc<AuthManager>,
+        base_url: String,
+        background_agent_task_auth_mode: BackgroundAgentTaskAuthMode,
+    ) -> Self {
         Self {
-            background_agent_task_manager: BackgroundAgentTaskManager::new(
+            background_agent_task_manager: BackgroundAgentTaskManager::new_with_auth_mode(
                 auth_manager,
                 base_url.clone(),
                 SessionSource::Cli,
+                background_agent_task_auth_mode,
             ),
             base_url,
         }
@@ -714,12 +720,14 @@ pub fn cloud_requirements_loader(
     auth_manager: Arc<AuthManager>,
     chatgpt_base_url: String,
     codex_home: PathBuf,
+    background_agent_task_auth_mode: BackgroundAgentTaskAuthMode,
 ) -> CloudRequirementsLoader {
     let service = CloudRequirementsService::new(
         auth_manager.clone(),
         Arc::new(BackendRequirementsFetcher::new(
             auth_manager,
             chatgpt_base_url,
+            background_agent_task_auth_mode,
         )),
         codex_home,
         CLOUD_REQUIREMENTS_TIMEOUT,
@@ -758,7 +766,12 @@ pub fn cloud_requirements_loader_for_storage(
         enable_codex_api_key_env,
         credentials_store_mode,
     );
-    cloud_requirements_loader(auth_manager, chatgpt_base_url, codex_home)
+    cloud_requirements_loader(
+        auth_manager,
+        chatgpt_base_url,
+        codex_home,
+        BackgroundAgentTaskAuthMode::Enabled,
+    )
 }
 
 fn parse_cloud_requirements(

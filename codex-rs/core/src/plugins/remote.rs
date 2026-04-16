@@ -1,5 +1,7 @@
 use crate::config::Config;
+use codex_features::Feature;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::build_reqwest_client;
@@ -302,10 +304,13 @@ async fn authorization_header_value_for_auth(
 ) -> std::io::Result<String> {
     let auth_manager =
         AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false);
-    if let Some(authorization_header_value) = BackgroundAgentTaskManager::new(
+    if let Some(authorization_header_value) = BackgroundAgentTaskManager::new_with_auth_mode(
         auth_manager,
         config.chatgpt_base_url.clone(),
         SessionSource::Cli,
+        BackgroundAgentTaskAuthMode::from_feature_enabled(
+            config.features.enabled(Feature::UseAgentIdentity),
+        ),
     )
     .authorization_header_value_or_bearer(auth)
     .await

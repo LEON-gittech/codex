@@ -74,6 +74,7 @@ use codex_hooks::HookResult;
 use codex_hooks::Hooks;
 use codex_hooks::HooksConfig;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::auth_env_telemetry::collect_auth_env_telemetry;
@@ -2083,10 +2084,13 @@ impl Session {
 
         let installation_id = resolve_installation_id(&config.codex_home).await?;
         let analytics_events_client = analytics_events_client.unwrap_or_else(|| {
-            AnalyticsEventsClient::new(
+            AnalyticsEventsClient::new_with_background_agent_task_auth_mode(
                 Arc::clone(&auth_manager),
                 config.chatgpt_base_url.trim_end_matches('/').to_string(),
                 config.analytics_enabled,
+                BackgroundAgentTaskAuthMode::from_feature_enabled(
+                    config.features.enabled(Feature::UseAgentIdentity),
+                ),
             )
         });
         let agent_identity_manager = Arc::new(AgentIdentityManager::new(
@@ -4585,10 +4589,13 @@ impl Session {
             .await;
         let background_authorization_header_value =
             if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
-                BackgroundAgentTaskManager::new(
+                BackgroundAgentTaskManager::new_with_auth_mode(
                     Arc::clone(&self.services.auth_manager),
                     config.chatgpt_base_url.clone(),
                     turn_context.session_source.clone(),
+                    BackgroundAgentTaskAuthMode::from_feature_enabled(
+                        config.features.enabled(Feature::UseAgentIdentity),
+                    ),
                 )
                 .authorization_header_value_or_bearer(auth)
                 .await
@@ -5001,6 +5008,7 @@ mod handlers {
     use crate::realtime_context::REALTIME_TURN_TOKEN_BUDGET;
     use crate::realtime_context::truncate_realtime_text_to_token_budget;
     use codex_features::Feature;
+    use codex_login::BackgroundAgentTaskAuthMode;
     use codex_login::BackgroundAgentTaskManager;
     use codex_utils_absolute_path::AbsolutePathBuf;
 
@@ -5455,10 +5463,13 @@ mod handlers {
         let auth = sess.services.auth_manager.auth().await;
         let background_authorization_header_value =
             if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
-                BackgroundAgentTaskManager::new(
+                BackgroundAgentTaskManager::new_with_auth_mode(
                     Arc::clone(&sess.services.auth_manager),
                     config.chatgpt_base_url.clone(),
                     SessionSource::Cli,
+                    BackgroundAgentTaskAuthMode::from_feature_enabled(
+                        config.features.enabled(Feature::UseAgentIdentity),
+                    ),
                 )
                 .authorization_header_value_or_bearer(auth)
                 .await

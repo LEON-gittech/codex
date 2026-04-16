@@ -37,6 +37,7 @@ use codex_config::types::AppsConfigToml;
 use codex_config::types::ToolSuggestDiscoverableType;
 use codex_features::Feature;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::CodexAuth;
 use codex_login::default_client::create_client;
@@ -217,10 +218,13 @@ pub async fn list_accessible_connectors_from_mcp_tools_with_options_and_status(
 
     let background_authorization_header_value =
         if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
-            BackgroundAgentTaskManager::new(
+            BackgroundAgentTaskManager::new_with_auth_mode(
                 auth_manager,
                 config.chatgpt_base_url.clone(),
                 SessionSource::Cli,
+                BackgroundAgentTaskAuthMode::from_feature_enabled(
+                    config.features.enabled(Feature::UseAgentIdentity),
+                ),
             )
             .authorization_header_value_or_bearer(auth)
             .await
@@ -467,10 +471,13 @@ async fn list_directory_connectors_for_tool_suggest_with_auth(
         let auth_manager =
             AuthManager::shared_from_config(config, /*enable_codex_api_key_env*/ false);
         match auth {
-            Some(auth) if auth.is_chatgpt_auth() => BackgroundAgentTaskManager::new(
+            Some(auth) if auth.is_chatgpt_auth() => BackgroundAgentTaskManager::new_with_auth_mode(
                 auth_manager,
                 config.chatgpt_base_url.clone(),
                 SessionSource::Cli,
+                BackgroundAgentTaskAuthMode::from_feature_enabled(
+                    config.features.enabled(Feature::UseAgentIdentity),
+                ),
             )
             .authorization_header_value_or_bearer(auth)
             .await

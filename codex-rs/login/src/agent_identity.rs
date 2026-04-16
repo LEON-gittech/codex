@@ -41,6 +41,7 @@ const AGENT_IDENTITY_BISCUIT_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct BackgroundAgentTaskManager {
     auth_manager: Arc<AuthManager>,
     chatgpt_base_url: String,
+    auth_mode: BackgroundAgentTaskAuthMode,
     abom: AgentBillOfMaterials,
     ensure_lock: Arc<Mutex<()>>,
 }
@@ -49,8 +50,30 @@ impl std::fmt::Debug for BackgroundAgentTaskManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BackgroundAgentTaskManager")
             .field("chatgpt_base_url", &self.chatgpt_base_url)
+            .field("auth_mode", &self.auth_mode)
             .field("abom", &self.abom)
             .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BackgroundAgentTaskAuthMode {
+    #[default]
+    Enabled,
+    Disabled,
+}
+
+impl BackgroundAgentTaskAuthMode {
+    pub fn from_feature_enabled(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+
+    fn is_enabled(self) -> bool {
+        matches!(self, Self::Enabled)
     }
 }
 
@@ -123,9 +146,24 @@ impl BackgroundAgentTaskManager {
         chatgpt_base_url: String,
         session_source: SessionSource,
     ) -> Self {
+        Self::new_with_auth_mode(
+            auth_manager,
+            chatgpt_base_url,
+            session_source,
+            BackgroundAgentTaskAuthMode::Enabled,
+        )
+    }
+
+    pub fn new_with_auth_mode(
+        auth_manager: Arc<AuthManager>,
+        chatgpt_base_url: String,
+        session_source: SessionSource,
+        auth_mode: BackgroundAgentTaskAuthMode,
+    ) -> Self {
         Self {
             auth_manager,
             chatgpt_base_url: normalize_chatgpt_base_url(&chatgpt_base_url),
+            auth_mode,
             abom: build_abom(session_source),
             ensure_lock: Arc::new(Mutex::new(())),
         }
@@ -144,6 +182,11 @@ impl BackgroundAgentTaskManager {
         &self,
         auth: &CodexAuth,
     ) -> Result<Option<String>> {
+        if !self.auth_mode.is_enabled() {
+            debug!("skipping background agent task auth because agent identity is disabled");
+            return Ok(None);
+        }
+
         if !supports_background_agent_task_auth(&self.chatgpt_base_url) {
             debug!(
                 chatgpt_base_url = %self.chatgpt_base_url,
@@ -741,4 +784,28 @@ fn supports_background_agent_task_auth(chatgpt_base_url: &str) -> bool {
         || host == "chatgpt-staging.com"
         || host.ends_with(".chatgpt.com")
         || host.ends_with(".chatgpt-staging.com")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn disabled_background_agent_task_auth_returns_none_for_supported_host() {
+        let auth = CodexAuth::create_dummy_chatgpt_auth_for_testing();
+        let auth_manager = AuthManager::from_auth_for_testing(auth.clone());
+        let manager = BackgroundAgentTaskManager::new_with_auth_mode(
+            auth_manager,
+            "https://chatgpt.com/backend-api".to_string(),
+            SessionSource::Cli,
+            BackgroundAgentTaskAuthMode::Disabled,
+        );
+
+        let authorization_header_value = manager
+            .authorization_header_value_for_auth(&auth)
+            .await
+            .expect("disabled manager should not fail");
+
+        assert_eq!(None, authorization_header_value);
+    }
 }

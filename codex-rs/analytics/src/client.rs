@@ -25,6 +25,7 @@ use codex_app_server_protocol::JSONRPCErrorError;
 use codex_app_server_protocol::RequestId;
 use codex_app_server_protocol::ServerNotification;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::default_client::create_client;
 use codex_plugin::PluginTelemetryMetadata;
@@ -53,14 +54,19 @@ pub struct AnalyticsEventsClient {
 }
 
 impl AnalyticsEventsQueue {
-    pub(crate) fn new(auth_manager: Arc<AuthManager>, base_url: String) -> Self {
+    pub(crate) fn new(
+        auth_manager: Arc<AuthManager>,
+        base_url: String,
+        background_agent_task_auth_mode: BackgroundAgentTaskAuthMode,
+    ) -> Self {
         let (sender, mut receiver) = mpsc::channel(ANALYTICS_EVENTS_QUEUE_SIZE);
         tokio::spawn(async move {
             let mut reducer = AnalyticsReducer::default();
-            let background_agent_task_manager = BackgroundAgentTaskManager::new(
+            let background_agent_task_manager = BackgroundAgentTaskManager::new_with_auth_mode(
                 Arc::clone(&auth_manager),
                 base_url.clone(),
                 SessionSource::Cli,
+                background_agent_task_auth_mode,
             );
             while let Some(input) = receiver.recv().await {
                 let mut events = Vec::new();
@@ -128,8 +134,26 @@ impl AnalyticsEventsClient {
         base_url: String,
         analytics_enabled: Option<bool>,
     ) -> Self {
+        Self::new_with_background_agent_task_auth_mode(
+            auth_manager,
+            base_url,
+            analytics_enabled,
+            BackgroundAgentTaskAuthMode::Enabled,
+        )
+    }
+
+    pub fn new_with_background_agent_task_auth_mode(
+        auth_manager: Arc<AuthManager>,
+        base_url: String,
+        analytics_enabled: Option<bool>,
+        background_agent_task_auth_mode: BackgroundAgentTaskAuthMode,
+    ) -> Self {
         Self {
-            queue: AnalyticsEventsQueue::new(Arc::clone(&auth_manager), base_url),
+            queue: AnalyticsEventsQueue::new(
+                Arc::clone(&auth_manager),
+                base_url,
+                background_agent_task_auth_mode,
+            ),
             analytics_enabled,
         }
     }

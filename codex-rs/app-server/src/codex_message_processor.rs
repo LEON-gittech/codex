@@ -261,6 +261,7 @@ use codex_feedback::FeedbackUploadOptions;
 use codex_git_utils::git_diff_to_remote;
 use codex_git_utils::resolve_root_git_project_for_trust;
 use codex_login::AuthManager;
+use codex_login::BackgroundAgentTaskAuthMode;
 use codex_login::BackgroundAgentTaskManager;
 use codex_login::CLIENT_ID;
 use codex_login::CodexAuth;
@@ -1373,6 +1374,10 @@ impl CodexMessageProcessor {
                     let codex_home = self.config.codex_home.to_path_buf();
                     let cli_overrides = self.current_cli_overrides();
                     let auth_url = server.auth_url.clone();
+                    let background_agent_task_auth_mode =
+                        BackgroundAgentTaskAuthMode::from_feature_enabled(
+                            self.config.features.enabled(Feature::UseAgentIdentity),
+                        );
                     tokio::spawn(async move {
                         let (success, error_msg) = match tokio::time::timeout(
                             LOGIN_CHATGPT_TIMEOUT,
@@ -1406,6 +1411,7 @@ impl CodexMessageProcessor {
                                 auth_manager.clone(),
                                 chatgpt_base_url,
                                 codex_home,
+                                background_agent_task_auth_mode,
                             );
                             sync_default_client_residency_requirement(
                                 &cli_overrides,
@@ -1489,6 +1495,10 @@ impl CodexMessageProcessor {
                     let chatgpt_base_url = self.config.chatgpt_base_url.clone();
                     let codex_home = self.config.codex_home.to_path_buf();
                     let cli_overrides = self.current_cli_overrides();
+                    let background_agent_task_auth_mode =
+                        BackgroundAgentTaskAuthMode::from_feature_enabled(
+                            self.config.features.enabled(Feature::UseAgentIdentity),
+                        );
                     tokio::spawn(async move {
                         let (success, error_msg) = tokio::select! {
                             _ = cancel.cancelled() => {
@@ -1520,6 +1530,7 @@ impl CodexMessageProcessor {
                                 auth_manager.clone(),
                                 chatgpt_base_url,
                                 codex_home,
+                                background_agent_task_auth_mode,
                             );
                             sync_default_client_residency_requirement(
                                 &cli_overrides,
@@ -1660,6 +1671,9 @@ impl CodexMessageProcessor {
             self.auth_manager.clone(),
             self.config.chatgpt_base_url.clone(),
             self.config.codex_home.to_path_buf(),
+            BackgroundAgentTaskAuthMode::from_feature_enabled(
+                self.config.features.enabled(Feature::UseAgentIdentity),
+            ),
         );
         let cli_overrides = self.current_cli_overrides();
         sync_default_client_residency_requirement(&cli_overrides, self.cloud_requirements.as_ref())
@@ -1906,10 +1920,13 @@ impl CodexMessageProcessor {
             });
         }
 
-        let authorization_header_value = BackgroundAgentTaskManager::new(
+        let authorization_header_value = BackgroundAgentTaskManager::new_with_auth_mode(
             Arc::clone(&self.auth_manager),
             self.config.chatgpt_base_url.clone(),
             self.thread_manager.session_source(),
+            BackgroundAgentTaskAuthMode::from_feature_enabled(
+                self.config.features.enabled(Feature::UseAgentIdentity),
+            ),
         )
         .authorization_header_value_or_bearer(&auth)
         .await;
@@ -5647,10 +5664,13 @@ impl CodexMessageProcessor {
 
         let background_authorization_header_value =
             if let Some(auth) = auth.as_ref().filter(|auth| auth.is_chatgpt_auth()) {
-                BackgroundAgentTaskManager::new(
+                BackgroundAgentTaskManager::new_with_auth_mode(
                     auth_manager,
                     config.chatgpt_base_url.clone(),
                     codex_protocol::protocol::SessionSource::Cli,
+                    BackgroundAgentTaskAuthMode::from_feature_enabled(
+                        config.features.enabled(Feature::UseAgentIdentity),
+                    ),
                 )
                 .authorization_header_value_or_bearer(auth)
                 .await
@@ -9254,8 +9274,14 @@ fn replace_cloud_requirements_loader(
     auth_manager: Arc<AuthManager>,
     chatgpt_base_url: String,
     codex_home: PathBuf,
+    background_agent_task_auth_mode: BackgroundAgentTaskAuthMode,
 ) {
-    let loader = cloud_requirements_loader(auth_manager, chatgpt_base_url, codex_home);
+    let loader = cloud_requirements_loader(
+        auth_manager,
+        chatgpt_base_url,
+        codex_home,
+        background_agent_task_auth_mode,
+    );
     if let Ok(mut guard) = cloud_requirements.write() {
         *guard = loader;
     } else {
