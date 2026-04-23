@@ -690,6 +690,7 @@ async fn unified_exec_wait_before_streamed_agent_message_snapshot() {
     chat.handle_codex_event(Event {
         id: "turn-1".into(),
         msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: Some("turn-1".into()),
             delta: "Streaming response.".into(),
         }),
     });

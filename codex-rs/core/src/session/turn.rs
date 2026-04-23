@@ -2218,6 +2218,7 @@ async fn try_run_sampling_request(
                 if let Some(active) = active_item.as_ref() {
                     let event =
                         EventMsg::AgentReasoningSectionBreak(AgentReasoningSectionBreakEvent {
+                            turn_id: Some(turn_context.sub_id.clone()),
                             item_id: active.id(),
                             summary_index,
                         });

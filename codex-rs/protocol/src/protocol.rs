@@ -2074,6 +2074,7 @@ pub struct AgentMessageContentDeltaEvent {
 impl HasLegacyEvent for AgentMessageContentDeltaEvent {
     fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
         vec![EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: Some(self.turn_id.clone()),
             delta: self.delta.clone(),
         })]
     }
@@ -2101,6 +2102,7 @@ pub struct ReasoningContentDeltaEvent {
 impl HasLegacyEvent for ReasoningContentDeltaEvent {
     fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
         vec![EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some(self.turn_id.clone()),
             delta: self.delta.clone(),
         })]
     }
@@ -2121,6 +2123,7 @@ impl HasLegacyEvent for ReasoningRawContentDeltaEvent {
     fn as_legacy_events(&self, _: bool) -> Vec<EventMsg> {
         vec![EventMsg::AgentReasoningRawContentDelta(
             AgentReasoningRawContentDeltaEvent {
+                turn_id: Some(self.turn_id.clone()),
                 delta: self.delta.clone(),
             },
         )]
@@ -2490,6 +2493,8 @@ pub struct UserMessageEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentMessageDeltaEvent {
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub delta: String,
 }
 
@@ -2505,11 +2510,15 @@ pub struct AgentReasoningRawContentEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningRawContentDeltaEvent {
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub delta: String,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningSectionBreakEvent {
+    #[serde(default)]
+    pub turn_id: Option<String>,
     // load with default value so it's backward compatible with the old format.
     #[serde(default)]
     pub item_id: String,
@@ -2519,6 +2528,8 @@ pub struct AgentReasoningSectionBreakEvent {
 
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema, TS)]
 pub struct AgentReasoningDeltaEvent {
+    #[serde(default)]
+    pub turn_id: Option<String>,
     pub delta: String,
 }
 

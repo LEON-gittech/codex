@@ -1060,6 +1060,7 @@ async fn ui_snapshots_small_heights_task_running() {
     chat.handle_codex_event(Event {
         id: "task-1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("turn-1".into()),
             delta: "**Thinking**".into(),
         }),
     });
@@ -1095,6 +1096,7 @@ async fn status_widget_and_approval_modal_snapshot() {
     chat.handle_codex_event(Event {
         id: "task-1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("turn-1".into()),
             delta: "**Analyzing**".into(),
         }),
     });
@@ -1158,6 +1160,7 @@ async fn status_widget_active_snapshot() {
     chat.handle_codex_event(Event {
         id: "task-1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("turn-1".into()),
             delta: "**Analyzing**".into(),
         }),
     });
@@ -1765,18 +1768,21 @@ async fn deltas_then_same_final_message_are_rendered_snapshot() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("s1".into()),
             delta: "I will ".into(),
         }),
     });
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("s1".into()),
             delta: "first analyze the ".into(),
         }),
     });
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("s1".into()),
             delta: "request.".into(),
         }),
     });
@@ -1791,12 +1797,14 @@ async fn deltas_then_same_final_message_are_rendered_snapshot() {
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: None,
             delta: "Here is the ".into(),
         }),
     });
     chat.handle_codex_event(Event {
         id: "s1".into(),
         msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: None,
             delta: "result.".into(),
         }),
     });
@@ -2529,6 +2537,7 @@ async fn chatwidget_exec_and_status_layout_vt100_snapshot() {
     chat.handle_codex_event(Event {
         id: "t1".into(),
         msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+            turn_id: Some("turn-1".into()),
             delta: "**Investigating rendering code**".into(),
         }),
     });
@@ -2623,7 +2632,10 @@ printf 'fenced within fenced\n'
 
         chat.handle_codex_event(Event {
             id: "t1".into(),
-            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }),
+            msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                turn_id: None,
+                delta,
+            }),
         });
         // Drive commit ticks and drain emitted history lines into the vt100 buffer.
         loop {

@@ -142,6 +142,7 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 use ratatui::text::Span;
 use ratatui::widgets::Block;
+use ratatui::widgets::Borders;
 use ratatui::widgets::Paragraph;
 use ratatui::widgets::StatefulWidgetRef;
 use ratatui::widgets::WidgetRef;
@@ -4129,7 +4130,11 @@ impl ChatComposer {
         let is_zellij = self.is_zellij;
         let style = user_message_style();
         let textarea_style = style.fg(ratatui::style::Color::Reset);
-        Block::default().style(style).render_ref(composer_rect, buf);
+        Block::default()
+            .borders(Borders::TOP | Borders::BOTTOM)
+            .style(style)
+            .border_style(Style::default().fg(ratatui::style::Color::White))
+            .render_ref(composer_rect, buf);
         if !remote_images_rect.is_empty() {
             Paragraph::new(self.remote_images_lines(remote_images_rect.width))
                 .style(style)
