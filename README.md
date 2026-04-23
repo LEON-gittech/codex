@@ -105,23 +105,32 @@ That means the README, docs, and fork messaging are intentionally about the **pr
 
 ## Quickstart
 
-If you are looking for the current Codex CLI install surface that this fork tracks, the familiar commands remain:
+If you want to use this fork from source, build the Rust workspace and install the resulting binary locally.
 
 ```shell
-# Install using npm
-npm install -g @openai/codex
+# Clone the fork and build the CLI
+git clone https://github.com/LEON-gittech/codex.git
+cd codex/codex-rs
+cargo build --release
 ```
+
+Then choose one of these install modes:
+
+### Option A: replace your local `codex`
 
 ```shell
-# Install using Homebrew
-brew install --cask codex
+mkdir -p ~/.local/bin
+install -m 755 target/release/codex ~/.local/bin/codex
 ```
 
-Then run:
+### Option B: install this fork as `codex-dev`
 
 ```shell
-codex
+mkdir -p ~/.local/bin
+install -m 755 target/release/codex ~/.local/bin/codex-dev
 ```
+
+After that, run either `codex` or `codex-dev`, depending on which install path you chose.
 
 ## Docs
 
