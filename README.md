@@ -26,15 +26,15 @@ The goal of **Open Codex CLI** is not to diverge for the sake of divergence. The
 
 This fork is currently based on the latest upstream `openai/codex` and adds a small set of focused CLI improvements from recent fork-specific commits:
 
-### 1. Better transcript contrast in the TUI
+### 1. Better transcript contrast in the TUI for Zellij
 
 From commit `598bebc6b`:
 
-- improves visual distinction between user-authored content and assistant-rendered content in the transcript
-- adjusts the TUI styling path used by user message rendering
-- makes long terminal sessions easier to scan, especially when transcript density is high
+- improves visual distinction between user-authored content and assistant-rendered content when Codex CLI is used inside `zellij`
+- adjusts the TUI styling path used by user message rendering for the `zellij` case
+- targets a real readability issue in `zellij`; this is not the same problem in a normal terminal session or in `tmux`
 
-This is a usability-focused patch: the goal is to reduce ambiguity in the chat history without changing the underlying interaction model.
+This is a usability-focused patch for the `zellij` environment: the goal is to reduce ambiguity in the chat history without changing the underlying interaction model.
 
 ### 2. Stale turn output protection in the TUI
 
@@ -81,6 +81,10 @@ Implement a Claude Code-style export flow for the current session, so a user can
 ### 3. Better memory mechanics
 
 Improve the Codex memory mechanism so it is easier to understand, easier to inspect, and more useful over long-running usage. The focus here is not just more memory, but better memory behavior.
+
+### 4. Better Zellij ergonomics
+
+Continue improving the Codex CLI experience under `zellij`, especially around rendering, layout, contrast, and other interaction details that behave differently from plain terminal sessions or `tmux`.
 
 ## Community
 
