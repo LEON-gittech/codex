@@ -596,6 +596,7 @@ fn server_notification_thread_events(
             vec![Event {
                 id: String::new(),
                 msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+                    turn_id: Some(notification.turn_id),
                     delta: notification.delta,
                 }),
             }],
@@ -617,6 +618,7 @@ fn server_notification_thread_events(
             vec![Event {
                 id: String::new(),
                 msg: EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent {
+                    turn_id: Some(notification.turn_id),
                     delta: notification.delta,
                 }),
             }],
@@ -626,6 +628,7 @@ fn server_notification_thread_events(
             vec![Event {
                 id: String::new(),
                 msg: EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
+                    turn_id: Some(notification.turn_id),
                     delta: notification.delta,
                 }),
             }],
@@ -1463,6 +1466,7 @@ mod tests {
         let EventMsg::AgentMessageDelta(delta) = &agent_event.msg else {
             panic!("expected bridged agent message delta");
         };
+        assert_eq!(delta.turn_id.as_deref(), Some("turn"));
         assert_eq!(delta.delta, "Hello");
 
         let (_, reasoning_events) = server_notification_thread_events(

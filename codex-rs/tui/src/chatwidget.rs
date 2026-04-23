@@ -2531,6 +2531,24 @@ impl ChatWidget {
         self.request_redraw();
     }
 
+    fn should_accept_live_turn_output(&self, turn_id: &str) -> bool {
+        self.last_turn_id
+            .as_deref()
+            .is_none_or(|current_turn_id| current_turn_id == turn_id)
+    }
+
+    #[cfg(test)]
+    fn should_accept_live_turn_from(
+        &self,
+        event_id: Option<&str>,
+        explicit_turn_id: Option<&str>,
+    ) -> bool {
+        explicit_turn_id
+            .or(event_id)
+            .filter(|turn_id| !turn_id.is_empty())
+            .is_none_or(|turn_id| self.should_accept_live_turn_output(turn_id))
+    }
+
     fn on_task_complete(&mut self, last_agent_message: Option<String>, from_replay: bool) {
         self.submit_pending_steers_after_interrupt = false;
         // Use `last_agent_message` from the turn-complete notification as the copy
@@ -6169,6 +6187,22 @@ impl ChatWidget {
     ) {
         let from_replay = render_source.is_replay();
         let replay_kind = render_source.replay_kind();
+        if !from_replay
+            && matches!(
+                &item,
+                ThreadItem::AgentMessage { .. }
+                    | ThreadItem::Plan { .. }
+                    | ThreadItem::Reasoning { .. }
+            )
+            && !self.should_accept_live_turn_output(turn_id.as_str())
+        {
+            tracing::debug!(
+                event_turn_id = %turn_id,
+                current_turn_id = ?self.last_turn_id,
+                "dropping stale assistant thread item for non-current turn"
+            );
+            return;
+        }
         match item {
             ThreadItem::UserMessage { id, content } => {
                 let user_message = UserMessageItem {
@@ -6542,18 +6576,72 @@ impl ChatWidget {
                 self.handle_item_completed_notification(notification, replay_kind);
             }
             ServerNotification::AgentMessageDelta(notification) => {
+                if replay_kind.is_none()
+                    && !self.should_accept_live_turn_output(notification.turn_id.as_str())
+                {
+                    tracing::debug!(
+                        event_turn_id = %notification.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale agent message delta for non-current turn"
+                    );
+                    return;
+                }
                 self.on_agent_message_delta(notification.delta);
             }
-            ServerNotification::PlanDelta(notification) => self.on_plan_delta(notification.delta),
+            ServerNotification::PlanDelta(notification) => {
+                if replay_kind.is_none()
+                    && !self.should_accept_live_turn_output(notification.turn_id.as_str())
+                {
+                    tracing::debug!(
+                        event_turn_id = %notification.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale plan delta for non-current turn"
+                    );
+                    return;
+                }
+                self.on_plan_delta(notification.delta)
+            }
             ServerNotification::ReasoningSummaryTextDelta(notification) => {
+                if replay_kind.is_none()
+                    && !self.should_accept_live_turn_output(notification.turn_id.as_str())
+                {
+                    tracing::debug!(
+                        event_turn_id = %notification.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale reasoning summary delta for non-current turn"
+                    );
+                    return;
+                }
                 self.on_agent_reasoning_delta(notification.delta);
             }
             ServerNotification::ReasoningTextDelta(notification) => {
+                if replay_kind.is_none()
+                    && !self.should_accept_live_turn_output(notification.turn_id.as_str())
+                {
+                    tracing::debug!(
+                        event_turn_id = %notification.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale reasoning raw delta for non-current turn"
+                    );
+                    return;
+                }
                 if self.config.show_raw_agent_reasoning {
                     self.on_agent_reasoning_delta(notification.delta);
                 }
             }
-            ServerNotification::ReasoningSummaryPartAdded(_) => self.on_reasoning_section_break(),
+            ServerNotification::ReasoningSummaryPartAdded(notification) => {
+                if replay_kind.is_none()
+                    && !self.should_accept_live_turn_output(notification.turn_id.as_str())
+                {
+                    tracing::debug!(
+                        event_turn_id = %notification.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale reasoning section break for non-current turn"
+                    );
+                    return;
+                }
+                self.on_reasoning_section_break()
+            }
             ServerNotification::TerminalInteraction(notification) => {
                 self.on_terminal_interaction(TerminalInteractionEvent {
                     call_id: notification.item_id,
@@ -6793,6 +6881,16 @@ impl ChatWidget {
         notification: TurnCompletedNotification,
         replay_kind: Option<ReplayKind>,
     ) {
+        if replay_kind.is_none()
+            && !self.should_accept_live_turn_output(notification.turn.id.as_str())
+        {
+            tracing::debug!(
+                event_turn_id = %notification.turn.id,
+                current_turn_id = ?self.last_turn_id,
+                "dropping stale turn completion for non-current turn"
+            );
+            return;
+        }
         match notification.turn.status {
             TurnStatus::Completed => {
                 self.last_non_retry_error = None;
@@ -7041,6 +7139,7 @@ impl ChatWidget {
         msg: EventMsg,
         replay_kind: Option<ReplayKind>,
     ) {
+        let live_event_turn_id = id.as_deref().filter(|id| !id.is_empty());
         let from_replay = replay_kind.is_some();
         let is_resume_initial_replay =
             matches!(replay_kind, Some(ReplayKind::ResumeInitialMessages));
@@ -7079,6 +7178,16 @@ impl ChatWidget {
             EventMsg::AgentMessage(AgentMessageEvent { message, .. })
                 if from_replay || self.is_review_mode =>
             {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(live_event_turn_id, /*explicit_turn_id*/ None)
+                {
+                    tracing::debug!(
+                        event_turn_id = ?live_event_turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy agent message for non-current turn"
+                    );
+                    return;
+                }
                 if !message.is_empty() {
                     self.record_agent_markdown(&message);
                 }
@@ -7088,24 +7197,87 @@ impl ChatWidget {
                 self.on_agent_message(message)
             }
             EventMsg::AgentMessage(AgentMessageEvent { message, .. }) => {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(live_event_turn_id, /*explicit_turn_id*/ None)
+                {
+                    tracing::debug!(
+                        event_turn_id = ?live_event_turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy agent message copy-source update for non-current turn"
+                    );
+                    return;
+                }
                 if !message.is_empty() {
                     self.record_agent_markdown(&message);
                 }
             }
-            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta }) => {
+            EventMsg::AgentMessageDelta(AgentMessageDeltaEvent { delta, turn_id }) => {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(live_event_turn_id, turn_id.as_deref())
+                {
+                    tracing::debug!(
+                        event_turn_id = ?turn_id.as_deref().or(live_event_turn_id),
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy agent message delta for non-current turn"
+                    );
+                    return;
+                }
                 self.on_agent_message_delta(delta)
             }
-            EventMsg::PlanDelta(event) => self.on_plan_delta(event.delta),
-            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta })
+            EventMsg::PlanDelta(event) => {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(
+                        live_event_turn_id,
+                        Some(event.turn_id.as_str()),
+                    )
+                {
+                    tracing::debug!(
+                        event_turn_id = %event.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy plan delta for non-current turn"
+                    );
+                    return;
+                }
+                self.on_plan_delta(event.delta)
+            }
+            EventMsg::AgentReasoningDelta(AgentReasoningDeltaEvent { delta, turn_id })
             | EventMsg::AgentReasoningRawContentDelta(AgentReasoningRawContentDeltaEvent {
+                turn_id,
                 delta,
-            }) => self.on_agent_reasoning_delta(delta),
+            }) => {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(live_event_turn_id, turn_id.as_deref())
+                {
+                    tracing::debug!(
+                        event_turn_id = ?turn_id.as_deref().or(live_event_turn_id),
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy reasoning delta for non-current turn"
+                    );
+                    return;
+                }
+                self.on_agent_reasoning_delta(delta)
+            }
             EventMsg::AgentReasoning(AgentReasoningEvent { .. }) => self.on_agent_reasoning_final(),
             EventMsg::AgentReasoningRawContent(AgentReasoningRawContentEvent { text }) => {
                 self.on_agent_reasoning_delta(text);
                 self.on_agent_reasoning_final();
             }
-            EventMsg::AgentReasoningSectionBreak(_) => self.on_reasoning_section_break(),
+            EventMsg::AgentReasoningSectionBreak(event) => {
+                if !from_replay
+                    && !self.should_accept_live_turn_from(
+                        live_event_turn_id,
+                        event.turn_id.as_deref(),
+                    )
+                {
+                    tracing::debug!(
+                        event_turn_id = ?event.turn_id.as_deref().or(live_event_turn_id),
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale legacy reasoning section break for non-current turn"
+                    );
+                    return;
+                }
+                self.on_reasoning_section_break()
+            }
             EventMsg::TurnStarted(event) => {
                 let turn_id = event.turn_id;
                 let model_context_window = event.model_context_window;
@@ -7116,8 +7288,18 @@ impl ChatWidget {
                 }
             }
             EventMsg::TurnComplete(TurnCompleteEvent {
-                last_agent_message, ..
+                turn_id,
+                last_agent_message,
+                ..
             }) => {
+                if !from_replay && !self.should_accept_live_turn_output(turn_id.as_str()) {
+                    tracing::debug!(
+                        event_turn_id = %turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale turn completion event for non-current turn"
+                    );
+                    return;
+                }
                 self.on_task_complete(last_agent_message, from_replay);
             }
             EventMsg::TokenCount(ev) => {
@@ -7308,6 +7490,24 @@ impl ChatWidget {
                 }
             }
             EventMsg::ItemCompleted(event) => {
+                if !from_replay
+                    && matches!(
+                        &event.item,
+                        codex_protocol::items::TurnItem::Plan(_)
+                            | codex_protocol::items::TurnItem::AgentMessage(_)
+                    )
+                    && !self.should_accept_live_turn_from(
+                        live_event_turn_id,
+                        Some(event.turn_id.as_str()),
+                    )
+                {
+                    tracing::debug!(
+                        event_turn_id = %event.turn_id,
+                        current_turn_id = ?self.last_turn_id,
+                        "dropping stale item completion for non-current turn"
+                    );
+                    return;
+                }
                 let item = event.item;
                 if !from_replay && let codex_protocol::items::TurnItem::UserMessage(item) = &item {
                     self.on_committed_user_message(item, from_replay);

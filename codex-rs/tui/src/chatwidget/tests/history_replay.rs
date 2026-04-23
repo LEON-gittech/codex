@@ -108,6 +108,317 @@ async fn thread_snapshot_replay_does_not_duplicate_agent_message_history() {
 }
 
 #[tokio::test]
+async fn stale_agent_delta_is_ignored_after_new_turn_starts() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let conversation_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
+            session_id: conversation_id,
+            forked_from_id: None,
+            thread_name: None,
+            model: "test-model".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: test_path_buf("/home/user/project").abs(),
+            reasoning_effort: Some(ReasoningEffortConfig::default()),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            permission_profile: None,
+            network_proxy: None,
+            rollout_path: Some(rollout_file.path().to_path_buf()),
+        }),
+    });
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-2".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-2".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    drain_insert_history(&mut rx);
+    chat.handle_codex_event(Event {
+        id: "stale-delta".into(),
+        msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: Some("turn-1".to_string()),
+            delta: "stale output".to_string(),
+        }),
+    });
+
+    assert!(
+        rx.try_recv().is_err(),
+        "stale delta should not emit history cells"
+    );
+}
+
+#[tokio::test]
+async fn stale_turn_completion_does_not_end_current_turn() {
+    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let conversation_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
+            session_id: conversation_id,
+            forked_from_id: None,
+            thread_name: None,
+            model: "test-model".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: test_path_buf("/home/user/project").abs(),
+            reasoning_effort: Some(ReasoningEffortConfig::default()),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            permission_profile: None,
+            network_proxy: None,
+            rollout_path: Some(rollout_file.path().to_path_buf()),
+        }),
+    });
+
+    let in_progress_turn = |turn_id: &str| AppServerTurn {
+        id: turn_id.to_string(),
+        items: Vec::new(),
+        status: AppServerTurnStatus::InProgress,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+    let completed_turn = |turn_id: &str| AppServerTurn {
+        id: turn_id.to_string(),
+        items: Vec::new(),
+        status: AppServerTurnStatus::Completed,
+        error: None,
+        started_at: None,
+        completed_at: Some(0),
+        duration_ms: None,
+    };
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: conversation_id.to_string(),
+            turn: in_progress_turn("turn-1"),
+        }),
+        None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: conversation_id.to_string(),
+            turn: in_progress_turn("turn-2"),
+        }),
+        None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::TurnCompleted(TurnCompletedNotification {
+            thread_id: conversation_id.to_string(),
+            turn: completed_turn("turn-1"),
+        }),
+        None,
+    );
+
+    assert!(
+        chat.agent_turn_running,
+        "stale completion should not end the current turn"
+    );
+    assert_eq!(chat.last_turn_id.as_deref(), Some("turn-2"));
+}
+
+#[tokio::test]
+async fn stale_plan_and_reasoning_deltas_are_ignored_after_new_turn_starts() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let conversation_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
+            session_id: conversation_id,
+            forked_from_id: None,
+            thread_name: None,
+            model: "test-model".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: test_path_buf("/home/user/project").abs(),
+            reasoning_effort: Some(ReasoningEffortConfig::default()),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            permission_profile: None,
+            network_proxy: None,
+            rollout_path: Some(rollout_file.path().to_path_buf()),
+        }),
+    });
+
+    if let Some(mask) = chat.active_collaboration_mask.as_mut() {
+        mask.mode = Some(ModeKind::Plan);
+    }
+
+    let in_progress_turn = |turn_id: &str| AppServerTurn {
+        id: turn_id.to_string(),
+        items: Vec::new(),
+        status: AppServerTurnStatus::InProgress,
+        error: None,
+        started_at: None,
+        completed_at: None,
+        duration_ms: None,
+    };
+
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: conversation_id.to_string(),
+            turn: in_progress_turn("turn-1"),
+        }),
+        None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::TurnStarted(TurnStartedNotification {
+            thread_id: conversation_id.to_string(),
+            turn: in_progress_turn("turn-2"),
+        }),
+        None,
+    );
+    drain_insert_history(&mut rx);
+
+    chat.handle_server_notification(
+        ServerNotification::PlanDelta(codex_app_server_protocol::PlanDeltaNotification {
+            thread_id: conversation_id.to_string(),
+            turn_id: "turn-1".to_string(),
+            item_id: "plan-1".to_string(),
+            delta: "- stale plan".to_string(),
+        }),
+        None,
+    );
+    chat.handle_server_notification(
+        ServerNotification::ReasoningSummaryTextDelta(
+            codex_app_server_protocol::ReasoningSummaryTextDeltaNotification {
+                thread_id: conversation_id.to_string(),
+                turn_id: "turn-1".to_string(),
+                item_id: "reason-1".to_string(),
+                delta: "**stale reasoning**".to_string(),
+                summary_index: 0,
+            },
+        ),
+        None,
+    );
+
+    assert!(rx.try_recv().is_err(), "stale deltas should not emit history cells");
+    assert!(chat.plan_delta_buffer.is_empty(), "stale plan delta should be ignored");
+    assert!(
+        chat.reasoning_buffer.is_empty(),
+        "stale reasoning delta should be ignored"
+    );
+}
+
+#[tokio::test]
+async fn stale_legacy_agent_message_and_item_completed_are_ignored() {
+    let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    let conversation_id = ThreadId::new();
+    let rollout_file = NamedTempFile::new().unwrap();
+    chat.handle_codex_event(Event {
+        id: "initial".into(),
+        msg: EventMsg::SessionConfigured(codex_protocol::protocol::SessionConfiguredEvent {
+            session_id: conversation_id,
+            forked_from_id: None,
+            thread_name: None,
+            model: "test-model".to_string(),
+            model_provider_id: "test-provider".to_string(),
+            service_tier: None,
+            approval_policy: AskForApproval::Never,
+            approvals_reviewer: ApprovalsReviewer::User,
+            sandbox_policy: SandboxPolicy::new_read_only_policy(),
+            cwd: test_path_buf("/home/user/project").abs(),
+            reasoning_effort: Some(ReasoningEffortConfig::default()),
+            history_log_id: 0,
+            history_entry_count: 0,
+            initial_messages: None,
+            permission_profile: None,
+            network_proxy: None,
+            rollout_path: Some(rollout_file.path().to_path_buf()),
+        }),
+    });
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-1".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-2".into(),
+        msg: EventMsg::TurnStarted(TurnStartedEvent {
+            turn_id: "turn-2".to_string(),
+            started_at: None,
+            model_context_window: None,
+            collaboration_mode_kind: ModeKind::Default,
+        }),
+    });
+    drain_insert_history(&mut rx);
+
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::AgentMessage(AgentMessageEvent {
+            message: "stale copy source".to_string(),
+            phase: None,
+            memory_citation: None,
+        }),
+    });
+    chat.handle_codex_event(Event {
+        id: "turn-1".into(),
+        msg: EventMsg::ItemCompleted(ItemCompletedEvent {
+            thread_id: conversation_id,
+            turn_id: "turn-1".to_string(),
+            item: TurnItem::AgentMessage(AgentMessageItem {
+                id: "agent-msg-1".to_string(),
+                content: vec![AgentMessageContent::Text {
+                    text: "stale item completed".to_string(),
+                }],
+                phase: None,
+                memory_citation: None,
+            }),
+        }),
+    });
+
+    assert!(
+        rx.try_recv().is_err(),
+        "stale legacy events should not emit history cells"
+    );
+    assert!(
+        chat.last_agent_markdown_text().is_none(),
+        "stale legacy agent message should not overwrite copy source"
+    );
+}
+
+#[tokio::test]
 async fn replayed_user_message_preserves_text_elements_and_local_images() {
     let (mut chat, mut rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
 
@@ -929,6 +1240,7 @@ async fn thread_snapshot_replayed_stream_recovery_restores_previous_status_heade
     chat.handle_codex_event_replay(Event {
         id: "delta".into(),
         msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: None,
             delta: "hello".to_string(),
         }),
     });
@@ -960,6 +1272,7 @@ async fn resume_replay_interrupted_reconnect_does_not_leave_stale_working_state(
             additional_details: None,
         }),
         EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: None,
             delta: "hello".to_string(),
         }),
     ]);
@@ -1026,6 +1339,7 @@ async fn stream_recovery_restores_previous_status_header() {
     chat.handle_codex_event(Event {
         id: "delta".into(),
         msg: EventMsg::AgentMessageDelta(AgentMessageDeltaEvent {
+            turn_id: None,
             delta: "hello".to_string(),
         }),
     });

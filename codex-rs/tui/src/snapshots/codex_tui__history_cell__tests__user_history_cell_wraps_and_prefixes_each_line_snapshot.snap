@@ -1,9 +1,10 @@
 ---
 source: tui/src/history_cell.rs
+assertion_line: 4404
 expression: rendered
 ---
 
-› one two
-  three
-  four five
-  six seven
+User › one two
+       three
+       four five
+       six seven
