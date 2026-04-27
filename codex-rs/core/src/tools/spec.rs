@@ -85,6 +85,14 @@ pub(crate) fn build_specs_with_discoverable_tools(
     use crate::tools::handlers::ListDirHandler;
     use crate::tools::handlers::McpHandler;
     use crate::tools::handlers::McpResourceHandler;
+    use crate::tools::handlers::MemoryReadHandler;
+    use crate::tools::handlers::MemoryWriteHandler;
+    use crate::tools::handlers::MemoryAddNoteHandler;
+    use crate::tools::handlers::MemorySearchHandler;
+    use crate::tools::handlers::NotepadReadHandler;
+    use crate::tools::handlers::NotepadWritePriorityHandler;
+    use crate::tools::handlers::NotepadWriteWorkingHandler;
+    use crate::tools::handlers::NotepadPruneHandler;
     use crate::tools::handlers::PlanHandler;
     use crate::tools::handlers::RequestPermissionsHandler;
     use crate::tools::handlers::RequestUserInputHandler;
@@ -229,6 +237,30 @@ pub(crate) fn build_specs_with_discoverable_tools(
             }
             ToolHandlerKind::McpResource => {
                 builder.register_handler(handler.name, mcp_resource_handler.clone());
+            }
+            ToolHandlerKind::MemoryRead => {
+                builder.register_handler(handler.name, Arc::new(MemoryReadHandler));
+            }
+            ToolHandlerKind::MemoryWrite => {
+                builder.register_handler(handler.name, Arc::new(MemoryWriteHandler));
+            }
+            ToolHandlerKind::MemoryAddNote => {
+                builder.register_handler(handler.name, Arc::new(MemoryAddNoteHandler));
+            }
+            ToolHandlerKind::MemorySearch => {
+                builder.register_handler(handler.name, Arc::new(MemorySearchHandler));
+            }
+            ToolHandlerKind::NotepadRead => {
+                builder.register_handler(handler.name, Arc::new(NotepadReadHandler));
+            }
+            ToolHandlerKind::NotepadWritePriority => {
+                builder.register_handler(handler.name, Arc::new(NotepadWritePriorityHandler));
+            }
+            ToolHandlerKind::NotepadWriteWorking => {
+                builder.register_handler(handler.name, Arc::new(NotepadWriteWorkingHandler));
+            }
+            ToolHandlerKind::NotepadPrune => {
+                builder.register_handler(handler.name, Arc::new(NotepadPruneHandler));
             }
             ToolHandlerKind::Plan => {
                 builder.register_handler(handler.name, plan_handler.clone());

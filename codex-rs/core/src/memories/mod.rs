@@ -6,11 +6,14 @@
 
 pub(crate) mod citations;
 mod control;
+pub(crate) mod claudemd;
+mod memdir;
 mod phase1;
 mod phase2;
 pub(crate) mod prompts;
 mod start;
 mod storage;
+pub(crate) mod notepad;
 #[cfg(test)]
 mod tests;
 pub(crate) mod usage;
@@ -102,6 +105,15 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 use std::path::Path;
 use std::path::PathBuf;
 
+pub(crate) use memdir::clear_topics;
+pub(crate) use memdir::list_topics;
+pub(crate) use memdir::load_memory_index;
+pub(crate) use memdir::relevance_score;
+pub(crate) use memdir::scan_memory_topics;
+pub(crate) use memdir::write_topic;
+pub(crate) use memdir::MemoryFrontmatter;
+pub(crate) use memdir::MemoryTopic;
+
 pub fn memory_root(codex_home: &AbsolutePathBuf) -> AbsolutePathBuf {
     codex_home.join("memories")
 }
@@ -119,5 +131,6 @@ fn raw_memories_file(root: &Path) -> PathBuf {
 }
 
 async fn ensure_layout(root: &Path) -> std::io::Result<()> {
-    tokio::fs::create_dir_all(rollout_summaries_dir(root)).await
+    tokio::fs::create_dir_all(rollout_summaries_dir(root)).await?;
+    tokio::fs::create_dir_all(memdir::topics_dir(root)).await
 }

@@ -1044,3 +1044,378 @@ mod phase2 {
         );
     }
 }
+// Integration tests for the consolidated memory subsystem.
+// Appended to memories/tests.rs to access pub(crate) symbols.
+
+mod claudemd_notepad_integration {
+    use super::super::claudemd;
+    use super::super::notepad;
+    use super::super::notepad::NotepadSection;
+    use super::super::scan_memory_topics;
+    use super::super::write_topic;
+    use super::super::relevance_score;
+    use super::super::MemoryFrontmatter;
+    use super::super::memory_root;
+    use chrono::Utc;
+    use codex_utils_absolute_path::AbsolutePathBuf;
+    use std::path::PathBuf;
+    use tempfile::TempDir;
+
+    struct TestEnv {
+        codex_home: TempDir,
+        project_root: TempDir,
+    }
+
+    impl TestEnv {
+        fn new() -> Self {
+            Self {
+                codex_home: TempDir::new().unwrap(),
+                project_root: TempDir::new().unwrap(),
+            }
+        }
+
+        fn codex_home_path(&self) -> &std::path::Path {
+            self.codex_home.path()
+        }
+
+        fn project_root_path(&self) -> &std::path::Path {
+            self.project_root.path()
+        }
+
+        fn memories_root(&self) -> PathBuf {
+            self.codex_home.path().join("memories")
+        }
+
+        fn codex_home_abs(&self) -> AbsolutePathBuf {
+            AbsolutePathBuf::from_absolute_path(self.codex_home.path()).unwrap()
+        }
+    }
+
+    // --- Claudemd tests ---
+
+    #[test]
+    fn claudemd_loads_all_four_scopes() {
+        let env = TestEnv::new();
+        let ch = env.codex_home_path();
+        let pr = env.project_root_path();
+
+        std::fs::create_dir_all(ch.join("rules")).unwrap();
+        std::fs::write(ch.join("rules/01_policy.md"), "Managed: policy A").unwrap();
+        std::fs::write(ch.join("AGENTS.md"), "User: global instructions").unwrap();
+        std::fs::write(pr.join("AGENTS.md"), "Project: project instructions").unwrap();
+        std::fs::create_dir_all(pr.join(".codex")).unwrap();
+        std::fs::write(pr.join(".codex/AGENTS.md"), "Local: local override").unwrap();
+
+        let files = claudemd::load_all_memory_files(pr, ch);
+        pretty_assertions::assert_eq!(files.len(), 4);
+
+        pretty_assertions::assert_eq!(files[0].scope, claudemd::MemoryScope::Managed);
+        assert!(files[0].content.contains("Managed: policy A"));
+        pretty_assertions::assert_eq!(files[1].scope, claudemd::MemoryScope::User);
+        assert!(files[1].content.contains("User: global instructions"));
+        pretty_assertions::assert_eq!(files[2].scope, claudemd::MemoryScope::Project);
+        assert!(files[2].content.contains("Project: project instructions"));
+        pretty_assertions::assert_eq!(files[3].scope, claudemd::MemoryScope::Local);
+        assert!(files[3].content.contains("Local: local override"));
+
+        // build_memory_prompt concatenation
+        let prompt = claudemd::build_memory_prompt(&files);
+        assert!(prompt.contains("Managed: policy A"));
+        assert!(prompt.contains("User: global instructions"));
+        assert!(prompt.contains("Project: project instructions"));
+        assert!(prompt.contains("Local: local override"));
+    }
+
+    #[test]
+    fn claudemd_agents_md_preferred_over_claude_md() {
+        let env = TestEnv::new();
+        let ch = env.codex_home_path();
+        let pr = env.project_root_path();
+
+        // Both files exist at project level
+        std::fs::write(pr.join("AGENTS.md"), "From AGENTS.md").unwrap();
+        std::fs::write(pr.join("CLAUDE.md"), "From CLAUDE.md").unwrap();
+
+        let files = claudemd::load_all_memory_files(pr, ch);
+        // Should load both: AGENTS.md first, then CLAUDE.md
+        assert!(files.len() >= 2);
+        assert!(files[0].content.contains("From AGENTS.md"));
+        assert!(files[1].content.contains("From CLAUDE.md"));
+    }
+
+    #[test]
+    fn claudemd_include_expansion() {
+        let env = TestEnv::new();
+        let pr = env.project_root_path();
+
+        std::fs::write(pr.join("extra.md"), "Included content here").unwrap();
+        std::fs::write(
+            pr.join("AGENTS.md"),
+            "Main content\n@include extra.md\nAfter include",
+        )
+        .unwrap();
+
+        let files = claudemd::load_all_memory_files(pr, env.codex_home_path());
+        pretty_assertions::assert_eq!(files.len(), 1);
+        assert!(files[0].content.contains("Main content"));
+        assert!(files[0].content.contains("Included content here"));
+        assert!(files[0].content.contains("After include"));
+    }
+
+    #[test]
+    fn claudemd_circular_include_skipped() {
+        let env = TestEnv::new();
+        let pr = env.project_root_path();
+
+        std::fs::write(pr.join("a.md"), "@include b.md\nContent A").unwrap();
+        std::fs::write(pr.join("b.md"), "@include a.md\nContent B").unwrap();
+        std::fs::write(pr.join("AGENTS.md"), "@include a.md").unwrap();
+
+        let files = claudemd::load_all_memory_files(pr, env.codex_home_path());
+        let content = &files[0].content;
+        assert!(content.contains("Content A"));
+        // b.md's @include a.md is circular → skipped
+        assert!(content.contains("Content B") || content.contains("circular @include"));
+    }
+
+    #[test]
+    fn claudemd_frontmatter_parsing() {
+        let input = "---\nmemory_type: project\npriority: 10\n---\nBody content";
+        let (fm, body) = claudemd::parse_frontmatter(input);
+        pretty_assertions::assert_eq!(fm.memory_type.as_deref(), Some("project"));
+        pretty_assertions::assert_eq!(fm.priority, Some(10));
+        assert!(body.starts_with("Body content"));
+    }
+
+    // --- Notepad integration tests ---
+
+    #[tokio::test]
+    async fn notepad_full_lifecycle() {
+        let env = TestEnv::new();
+        let root = env.memories_root();
+
+        // Initially empty
+        assert!(notepad::read_notepad(&root, None).await.is_none());
+
+        // Write priority
+        notepad::write_priority(&root, "Fix login bug first")
+            .await
+            .unwrap();
+        let priority = notepad::read_notepad(&root, Some(NotepadSection::Priority))
+            .await
+            .unwrap();
+        pretty_assertions::assert_eq!(priority, "Fix login bug first");
+
+        // Append working entries
+        notepad::append_working(&root, "Started refactoring auth module")
+            .await
+            .unwrap();
+        notepad::append_working(&root, "Found circular dependency in UserService")
+            .await
+            .unwrap();
+        let working = notepad::read_notepad(&root, Some(NotepadSection::Working))
+            .await
+            .unwrap();
+        assert!(working.contains("Started refactoring auth module"));
+        assert!(working.contains("Found circular dependency in UserService"));
+
+        // Append manual
+        notepad::append_manual(&root, "Always use bcrypt for passwords")
+            .await
+            .unwrap();
+        let manual = notepad::read_notepad(&root, Some(NotepadSection::Manual))
+            .await
+            .unwrap();
+        assert!(manual.contains("Always use bcrypt for passwords"));
+
+        // Read all sections
+        let all = notepad::read_notepad(&root, None).await.unwrap();
+        assert!(all.contains("## PRIORITY"));
+        assert!(all.contains("## WORKING MEMORY"));
+        assert!(all.contains("## MANUAL"));
+
+        // Prune old entries (max_age_days=0 → all working entries pruned)
+        let removed = notepad::prune_working(&root, Some(0)).await.unwrap();
+        pretty_assertions::assert_eq!(removed, 2);
+
+        // Working should be empty after pruning
+        let working_after = notepad::read_notepad(&root, Some(NotepadSection::Working)).await;
+        assert!(working_after.is_none() || working_after.unwrap().trim().is_empty());
+
+        // Priority and manual should survive pruning
+        assert!(notepad::read_notepad(&root, Some(NotepadSection::Priority))
+            .await
+            .is_some());
+    }
+
+    #[tokio::test]
+    async fn notepad_priority_truncation() {
+        let env = TestEnv::new();
+        let root = env.memories_root();
+
+        let long_content = "x".repeat(600);
+        notepad::write_priority(&root, &long_content).await.unwrap();
+
+        let priority = notepad::read_notepad(&root, Some(NotepadSection::Priority))
+            .await
+            .unwrap();
+        assert!(
+            priority.len() <= 500,
+            "Priority should be truncated to 500 chars, got {}",
+            priority.len()
+        );
+    }
+
+    #[tokio::test]
+    async fn notepad_priority_replaces_not_appends() {
+        let env = TestEnv::new();
+        let root = env.memories_root();
+
+        notepad::write_priority(&root, "First priority").await.unwrap();
+        notepad::write_priority(&root, "Second priority").await.unwrap();
+
+        let priority = notepad::read_notepad(&root, Some(NotepadSection::Priority))
+            .await
+            .unwrap();
+        pretty_assertions::assert_eq!(priority, "Second priority");
+    }
+
+    // --- Memdir topics + relevance ---
+
+    #[tokio::test]
+    async fn memdir_topic_write_and_scan() {
+        let env = TestEnv::new();
+        let root = env.memories_root();
+
+        let fm1 = MemoryFrontmatter {
+            name: "architecture".to_string(),
+            description: "System architecture decisions".to_string(),
+            r#type: "project".to_string(),
+            keywords: vec!["microservice".to_string(), "api".to_string()],
+            source: "agent".to_string(),
+            updated_at: Some(Utc::now()),
+        };
+        write_topic(&root, "architecture", &fm1, "Use microservice pattern for API gateway")
+            .await
+            .unwrap();
+
+        let fm2 = MemoryFrontmatter {
+            name: "testing".to_string(),
+            description: "Testing conventions and patterns".to_string(),
+            r#type: "project".to_string(),
+            keywords: vec!["pytest".to_string(), "unit-test".to_string()],
+            source: "agent".to_string(),
+            updated_at: Some(Utc::now()),
+        };
+        write_topic(&root, "testing", &fm2, "Use pytest with fixtures for unit tests")
+            .await
+            .unwrap();
+
+        let topics = scan_memory_topics(&root).await;
+        pretty_assertions::assert_eq!(topics.len(), 2);
+
+        let score_arch = relevance_score(
+            topics.iter().find(|t| t.frontmatter.name == "architecture").unwrap(),
+            "microservice API design",
+        );
+        let score_test = relevance_score(
+            topics.iter().find(|t| t.frontmatter.name == "testing").unwrap(),
+            "microservice API design",
+        );
+        assert!(
+            score_arch > score_test,
+            "Architecture should score higher for microservice API query ({} vs {})",
+            score_arch, score_test
+        );
+    }
+
+    // --- Full stack integration ---
+
+    #[tokio::test]
+    async fn full_memory_stack_claudemd_memdir_notepad() {
+        let env = TestEnv::new();
+        let ch = env.codex_home_path();
+        let pr = env.project_root_path();
+        let root = env.memories_root();
+
+        // Claudemd: user + project scopes
+        std::fs::write(ch.join("AGENTS.md"), "User-level: prefer Rust over Python").unwrap();
+        std::fs::write(pr.join("AGENTS.md"), "Project-level: use tokio for async").unwrap();
+
+        // Memdir: create a topic
+        let fm = MemoryFrontmatter {
+            name: "conventions".to_string(),
+            description: "Coding conventions".to_string(),
+            r#type: "project".to_string(),
+            keywords: vec!["rust".to_string(), "tokio".to_string()],
+            source: "agent".to_string(),
+            updated_at: Some(Utc::now()),
+        };
+        write_topic(&root, "conventions", &fm, "Always use tokio::spawn for async tasks")
+            .await
+            .unwrap();
+
+        // Notepad: priority + working
+        notepad::write_priority(&root, "Ship v2 by Friday")
+            .await
+            .unwrap();
+        notepad::append_working(&root, "Completed auth module refactor")
+            .await
+            .unwrap();
+
+        // Verify claudemd loads both scopes
+        let claudemd_files = claudemd::load_all_memory_files(pr, ch);
+        pretty_assertions::assert_eq!(claudemd_files.len(), 2);
+        let prompt = claudemd::build_memory_prompt(&claudemd_files);
+        assert!(prompt.contains("prefer Rust over Python"));
+        assert!(prompt.contains("use tokio for async"));
+
+        // Verify memdir topics
+        let topics = scan_memory_topics(&root).await;
+        pretty_assertions::assert_eq!(topics.len(), 1);
+        pretty_assertions::assert_eq!(topics[0].frontmatter.name, "conventions");
+
+        // Verify notepad
+        let priority = notepad::read_notepad(&root, Some(NotepadSection::Priority))
+            .await
+            .unwrap();
+        assert!(priority.contains("Ship v2 by Friday"));
+        let working = notepad::read_notepad(&root, Some(NotepadSection::Working))
+            .await
+            .unwrap();
+        assert!(working.contains("Completed auth module refactor"));
+
+        // Verify notepad prune doesn't affect topics
+        let removed = notepad::prune_working(&root, Some(0)).await.unwrap();
+        assert!(removed > 0);
+        let topics_after = scan_memory_topics(&root).await;
+        pretty_assertions::assert_eq!(topics_after.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn memory_prompt_injects_notepad_priority() {
+        let env = TestEnv::new();
+        let codex_home = env.codex_home_abs();
+
+        // Set up notepad priority
+        let root = memory_root(&codex_home);
+        tokio::fs::create_dir_all(&root).await.unwrap();
+        notepad::write_priority(&root, "Critical: deploy hotfix before EOD")
+            .await
+            .unwrap();
+
+        // Build memory developer instructions (same path as session/mod.rs)
+        let result = crate::memories::prompts::build_memory_tool_developer_instructions(
+            &codex_home,
+            "",
+        )
+        .await;
+
+        assert!(result.is_some(), "Should return Some when notepad priority exists");
+        let instructions = result.unwrap();
+        assert!(
+            instructions.contains("Critical: deploy hotfix before EOD"),
+            "Developer instructions should contain notepad priority content"
+        );
+    }
+}

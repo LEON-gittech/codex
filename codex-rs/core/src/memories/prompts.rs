@@ -259,31 +259,60 @@ pub(super) fn build_stage_one_input_message(
     ])?)
 }
 
-/// Build prompt used for read path. This prompt must be added to the developer instructions. In
-/// case of large memory files, the `memory_summary.md` is truncated at
-/// [phase_one::MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_SUMMARY_TOKEN_LIMIT].
+/// Build prompt used for read path. This prompt must be added to the developer instructions.
+///
+/// The new memdir layout is tried first (`topics/` + `MEMORY.md`). If no topics exist, the
+/// legacy `memory_summary.md` is used as a fallback. If a notepad with PRIORITY content
+/// exists, it is appended as an additional section.
 pub(crate) async fn build_memory_tool_developer_instructions(
     codex_home: &AbsolutePathBuf,
+    query: &str,
 ) -> Option<String> {
     let base_path = memory_root(codex_home);
-    let memory_summary_path = base_path.join("memory_summary.md");
-    let memory_summary = fs::read_to_string(&memory_summary_path)
-        .await
-        .ok()?
-        .trim()
-        .to_string();
-    let memory_summary = truncate_text(
-        &memory_summary,
-        TruncationPolicy::Tokens(phase_one::MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_SUMMARY_TOKEN_LIMIT),
-    );
-    if memory_summary.is_empty() {
-        return None;
-    }
-    let base_path = base_path.display().to_string();
+    let base_path_str = base_path.display().to_string();
+
+    // Try the new memdir layout first.
+    let memory_summary = if let Some(content) =
+        crate::memories::memdir::build_memory_prompt_content(codex_home, query).await
+    {
+        Some(content)
+    } else {
+        // Legacy fallback: read the monolithic memory_summary.md.
+        let memory_summary_path = base_path.join("memory_summary.md");
+        match fs::read_to_string(&memory_summary_path).await {
+            Ok(raw) => {
+                let summary = raw.trim().to_string();
+                let summary = truncate_text(
+                    &summary,
+                    TruncationPolicy::Tokens(phase_one::MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_SUMMARY_TOKEN_LIMIT),
+                );
+                if summary.is_empty() { None } else { Some(summary) }
+            }
+            Err(_) => None,
+        }
+    };
+
+    // Append notepad PRIORITY section if present.
+    let notepad_priority = crate::memories::notepad::read_notepad(
+        &base_path,
+        Some(crate::memories::notepad::NotepadSection::Priority),
+    )
+    .await
+    .filter(|s| !s.trim().is_empty());
+
+    let combined = match (&memory_summary, &notepad_priority) {
+        (Some(summary), Some(priority)) => {
+            format!("{}\n\n## Notepad Priority\n{}", summary, priority)
+        }
+        (Some(summary), None) => summary.clone(),
+        (None, Some(priority)) => format!("## Notepad Priority\n{}", priority),
+        (None, None) => return None,
+    };
+
     MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
         .render([
-            ("base_path", base_path.as_str()),
-            ("memory_summary", memory_summary.as_str()),
+            ("base_path", base_path_str.as_str()),
+            ("memory_summary", combined.as_str()),
         ])
         .ok()
 }

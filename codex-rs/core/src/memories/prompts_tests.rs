@@ -100,7 +100,7 @@ async fn build_memory_tool_developer_instructions_renders_embedded_template() {
     .await
     .unwrap();
 
-    let instructions = build_memory_tool_developer_instructions(&codex_home)
+    let instructions = build_memory_tool_developer_instructions(&codex_home, "")
         .await
         .unwrap();
 

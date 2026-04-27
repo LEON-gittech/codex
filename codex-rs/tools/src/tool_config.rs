@@ -111,6 +111,7 @@ pub struct ToolsConfig {
     pub experimental_supported_tools: Vec<String>,
     pub agent_jobs_tools: bool,
     pub agent_jobs_worker_tools: bool,
+    pub memory_tools_enabled: bool,
     pub agent_type_description: String,
 }
 
@@ -232,6 +233,7 @@ impl ToolsConfig {
             experimental_supported_tools: model_info.experimental_supported_tools.clone(),
             agent_jobs_tools: include_agent_jobs,
             agent_jobs_worker_tools,
+            memory_tools_enabled: features.enabled(Feature::MemoryTool),
             agent_type_description: String::new(),
         }
     }

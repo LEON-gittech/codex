@@ -130,7 +130,24 @@ impl<'a> AgentsMdManager<'a> {
 
         let mut output = String::new();
 
+        // Load hierarchical AGENTS.md files (Managed → User → Project → Local)
+        // via the claudemd subsystem before the existing project-root-to-CWD scan.
+        if self.config.features.enabled(codex_features::Feature::MemoryTool) {
+            let codex_home = &self.config.codex_home;
+            let cwd = &self.config.cwd;
+            let project_root = cwd.as_path();
+            let claudemd_files =
+                crate::memories::claudemd::load_all_memory_files(project_root, codex_home);
+            let claudemd_prompt = crate::memories::claudemd::build_memory_prompt(&claudemd_files);
+            if !claudemd_prompt.is_empty() {
+                output.push_str(&claudemd_prompt);
+            }
+        }
+
         if let Some(instructions) = self.config.user_instructions.clone() {
+            if !output.is_empty() {
+                output.push_str(AGENTS_MD_SEPARATOR);
+            }
             output.push_str(&instructions);
         }
 
