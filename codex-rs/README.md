@@ -90,47 +90,6 @@ codex --sandbox danger-full-access
 The same setting can be persisted in `~/.codex/config.toml` via the top-level `sandbox_mode = "MODE"` key, e.g. `sandbox_mode = "workspace-write"`.
 In `workspace-write`, Codex also includes `~/.codex/memories` in its writable roots so memory maintenance does not require an extra approval.
 
-### Memory Subsystem
-
-Codex has a multi-layered memory system that persists context across sessions.
-
-#### What's New (v0.2 — 2026-04-27)
-
-Three new subsystems have been added, inspired by Claude Code and oh-my-codex:
-
-- **AGENTS.md Hierarchical Loading** — Loads instruction files from four scopes
-  (Managed `~/.codex/rules/*.md` → User `~/.codex/AGENTS.md` → Project → Local),
-  with `@include` directive expansion and YAML frontmatter support.
-
-- **Notepad** — A structured scratchpad (`~/.codex/memories/notepad.md`) with three
-  sections: PRIORITY (auto-injected into agent context), WORKING MEMORY (timestamped,
-  auto-prunable), and MANUAL (permanent notes). Uses atomic writes for crash safety.
-
-- **Memory CRUD Tools** — Eight built-in tools (`memory_read/write/add_note/search`,
-  `notepad_read/write_priority/write_working/prune`) that let the agent actively
-  read and write its own memory during a session. Gated behind the `MemoryTool` feature.
-
-#### Architecture
-
-```
-Session Start
-  ① claudemd: 4-scope AGENTS.md → user_instructions
-  ② Background: Phase1 rollout extract → Phase2 consolidate
-     → produces MEMORY.md + topics/*.md
-  ③ prompts.rs: MEMORY.md + top-8 topics + notepad PRIORITY
-     → developer_instructions
-  ④ 8 built-in tools: agent can actively CRUD memory
-```
-
-See `core/src/memories/README.md` for the full architecture and phase pipeline docs.
-
-#### Roadmap
-
-- [ ] AutoDream background daemon (3-gate delayed consolidation)
-- [ ] Notepad TUI sidebar integration
-- [ ] Cross-session memory sharing (read-only project roots)
-- [ ] Memory versioning (lightweight topic edit changelog)
-
 ## Code Organization
 
 This folder is the root of a Cargo workspace. It contains quite a bit of experimental code, but here are the key crates:
