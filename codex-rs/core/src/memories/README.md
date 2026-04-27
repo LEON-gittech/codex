@@ -1,6 +1,67 @@
 # Memories Pipeline (Core)
 
-This module runs a startup memory pipeline for eligible sessions.
+This module runs a startup memory pipeline for eligible sessions, plus several
+subsystems that give the agent active read/write access to its own memory.
+
+---
+
+## What's New
+
+### v0.2 — Consolidated Memory Subsystem (2026-04-27)
+
+Three new subsystems inspired by Claude Code and oh-my-codex have been added,
+bringing the total to five cooperating components:
+
+| Component | Source | Status |
+|-----------|--------|--------|
+| Phase 1 + Phase 2 Pipeline | Original codex-cli | Stable |
+| AGENTS.md Hierarchical Loading | Claude Code `claudemd` | **New** |
+| Memory CRUD Built-in Tools | oh-my-codex `memory_tools` | **New** |
+| Notepad Section System | oh-my-codex `notepad` | **New** |
+| AutoDream Background Daemon | Claude Code `autodream` | Planned |
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│ Session Start                                                │
+│                                                              │
+│  1. claudemd: Load 4-scope AGENTS.md hierarchy + @include   │
+│     → Injected into user_instructions                        │
+│                                                              │
+│  2. Background Pipeline: Phase1 Extract → Phase2 Consolidate │
+│     → Produces MEMORY.md + topics/*.md                       │
+│                                                              │
+│  3. prompts.rs:                                              │
+│     a. build_memory_prompt_content()                         │
+│        → MEMORY.md + top-8 topics (relevance-scored)         │
+│     b. Notepad PRIORITY section                              │
+│     → Merged into developer_instructions                     │
+│                                                              │
+│  4. 8 Built-in Tools: Agent can actively CRUD memory         │
+│     → Modified topics/notepad take effect on next turn       │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Roadmap
+
+- [ ] **AutoDream Background Daemon** — Replace startup-blocking Phase 2 with a
+      3-gate background consolidator (time ≥ 24h, ≥ 5 new sessions, no lock).
+      4-phase merge: Orient → Gather → Consolidate → Prune.
+- [ ] **Notepad TUI Integration** — Show notepad sections in the TUI sidebar;
+      allow manual editing.
+- [ ] **Memory Tool Hook for TUI** — Surface `memory_read` / `notepad_read`
+      output in the TUI's context panel.
+- [ ] **Cross-session Memory Sharing** — Allow project-level memory roots to be
+      shared across users (read-only).
+- [ ] **Memory Versioning** — Keep a lightweight changelog of topic edits so
+      agents can reason about what changed and when.
+
+---
 
 ## Prompt Templates
 
@@ -14,16 +75,7 @@ Memory prompt templates live under `codex-rs/core/templates/memories/`.
 - In `codex`, edit those undated template files in place.
 - The dated snapshot-copy workflow is used in the separate `openai/project/agent_memory/write` harness repo, not here.
 
-## When it runs
-
-The pipeline is triggered when a root session starts, and only if:
-
-- the session is not ephemeral
-- the memory feature is enabled
-- the session is not a sub-agent session
-- the state DB is available
-
-It runs asynchronously in the background and executes two phases in order: Phase 1, then Phase 2.
+---
 
 ## Phase 1: Rollout Extraction (per-thread)
 
@@ -142,3 +194,115 @@ In practice, this phase is responsible for refreshing the on-disk memory workspa
 
 - Phase 1 scales across many rollouts and produces normalized per-rollout memory records.
 - Phase 2 serializes global consolidation so the shared memory artifacts are updated safely and consistently.
+
+---
+
+## AGENTS.md Hierarchical Loading (claudemd)
+
+Inspired by Claude Code's `claudemd` system. Loads instruction files from
+four scopes in priority order:
+
+| Scope | Path | Description |
+|-------|------|-------------|
+| Managed | `~/.codex/rules/*.md` | Global policy (sorted alphabetically) |
+| User | `~/.codex/AGENTS.md` | User-level instructions |
+| Project | `{project}/AGENTS.md` | Project-level instructions |
+| Local | `{project}/.codex/AGENTS.md` | Local overrides |
+
+Each scope prefers `AGENTS.md`; falls back to `CLAUDE.md` for compatibility.
+
+### @include Directive
+
+Files can reference other files with `@include <relative-path>`:
+
+- Paths are resolved relative to the including file's directory
+- Maximum depth: 10 levels
+- Circular includes are detected and skipped
+- Per-file size limit: 40 KB
+- mtime-based cache avoids re-reading unchanged files
+
+### YAML Frontmatter
+
+Each file may start with a YAML frontmatter block:
+
+```yaml
+---
+memory_type: project
+priority: 10
+---
+```
+
+Parsed fields: `memory_type`, `priority`, `scope`.
+
+### Implementation
+
+- `claudemd.rs` — Core loading, expansion, caching
+- Injection point: `agents_md.rs::user_instructions_with_fs()` prepends claudemd content
+
+---
+
+## Notepad Section System
+
+Inspired by oh-my-codex's notepad. A structured scratchpad stored in
+`{memories_root}/notepad.md` with three sections:
+
+### PRIORITY (≤500 chars)
+
+The single most important thing the agent should keep in mind. Replaced
+entirely on each write. Automatically injected into developer instructions
+via `prompts.rs::build_memory_tool_developer_instructions()`.
+
+### WORKING MEMORY
+
+Timestamped session notes. Appended with `notepad_write_working`. Auto-pruned
+by `notepad_prune` (default: entries older than 7 days).
+
+Format: `[2026-04-27T10:30:00Z] Completed auth refactor`
+
+### MANUAL
+
+Permanent notes that are never auto-pruned. Appended with
+`notepad_write_working` (the handler routes to the correct section).
+
+### Crash Safety
+
+All writes use atomic rename: write to `.notepad.md.tmp.{pid}`, then `rename()`
+to `notepad.md`.
+
+### Implementation
+
+- `notepad.rs` — Section parsing, atomic writes, prune logic
+- `prompts.rs` — PRIORITY injection into developer instructions
+
+---
+
+## Memory CRUD Built-in Tools
+
+Eight built-in tools that give the agent active read/write access to the memory
+subsystem. All gated behind `Feature::MemoryTool` → `ToolsConfig.memory_tools_enabled`.
+
+### Memory Tools
+
+| Tool | Description |
+|------|-------------|
+| `memory_read` | Read MEMORY.md index + relevant topics + notepad priority |
+| `memory_write` | Write/update a topic file (with YAML frontmatter) |
+| `memory_add_note` | Append a timestamped note to a topic (creates if missing) |
+| `memory_search` | Search topics by query, return ranked matches |
+
+### Notepad Tools
+
+| Tool | Description |
+|------|-------------|
+| `notepad_read` | Read notepad (all or specific section) |
+| `notepad_write_priority` | Replace PRIORITY section (≤500 chars) |
+| `notepad_write_working` | Append timestamped entry to WORKING MEMORY |
+| `notepad_prune` | Prune WORKING MEMORY entries older than N days |
+
+### Implementation
+
+- `memory_tools.rs` — Tool handlers (8 structs implementing `ToolHandler`)
+- `tools/src/memory_tool.rs` — Tool specs (JSON schema definitions)
+- `tool_registry_plan_types.rs` — `ToolHandlerKind` variants
+- `tool_registry_plan.rs` — Spec + handler registration
+- `tool_config.rs` — `memory_tools_enabled` flag

@@ -715,6 +715,175 @@ impl ChatWidget {
                 self.app_event_tx
                     .send(AppEvent::BeginWindowsSandboxGrantReadRoot { path: args });
             }
+            SlashCommand::Memories if !trimmed.is_empty() => {
+                let parts: Vec<&str> = trimmed.splitn(2, ' ').collect();
+                let subcmd = parts[0].to_ascii_lowercase();
+                let arg = parts.get(1).map(|s| s.trim()).unwrap_or("");
+                let codex_home = self.config.codex_home.clone();
+                let tx = self.app_event_tx.clone();
+                match subcmd.as_str() {
+                    "list" => {
+                        tokio::spawn(async move {
+                            let root = codex_home.join("memories");
+                            let topics_dir = root.join("topics");
+                            let mut items = Vec::new();
+                            if let Ok(mut rd) = tokio::fs::read_dir(&topics_dir).await {
+                                while let Ok(Some(entry)) = rd.next_entry().await {
+                                    let path = entry.path();
+                                    if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                                        continue;
+                                    }
+                                    if let Ok(content) = tokio::fs::read_to_string(&path).await {
+                                        let (name, desc) = parse_memory_topic_header(&content);
+                                        items.push(format!("- {}: {}", name, desc));
+                                    }
+                                }
+                            }
+                            let text = if items.is_empty() {
+                                "No memory topics found. Use `/memories add <topic>` to create one.".to_string()
+                            } else {
+                                items.join("\n")
+                            };
+                            let _ = tx.send(AppEvent::MemoryCommandResult { text, is_error: false });
+                        });
+                    }
+                    "add" if !arg.is_empty() => {
+                        let topic_name = arg.to_string();
+                        tokio::spawn(async move {
+                            let root = codex_home.join("memories");
+                            let topics_dir = root.join("topics");
+                            if let Err(err) = tokio::fs::create_dir_all(&topics_dir).await {
+                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                    text: format!("Failed to create topics directory: {}", err),
+                                    is_error: true,
+                                });
+                                return;
+                            }
+                            let safe_name = topic_name.to_lowercase()
+                                .replace(' ', "_")
+                                .replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "");
+                            if safe_name.is_empty() {
+                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                    text: "Invalid topic name.".to_string(),
+                                    is_error: true,
+                                });
+                                return;
+                            }
+                            let path = topics_dir.join(format!("{}.md", safe_name));
+                            let seed = format!(
+                                "---\nname: {}\ndescription: \ntype: project\nkeywords: []\nsource: user\n---\n\n",
+                                topic_name
+                            );
+                            match crate::external_editor::resolve_editor_command() {
+                                Ok(cmd) => {
+                                    match crate::external_editor::run_editor(&seed, &cmd).await {
+                                        Ok(content) => {
+                                            if let Err(err) = tokio::fs::write(&path, content).await {
+                                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                    text: format!("Failed to write topic: {}", err),
+                                                    is_error: true,
+                                                });
+                                            } else {
+                                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                    text: format!("Memory topic '{}' saved to {}.", topic_name, path.display()),
+                                                    is_error: false,
+                                                });
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                text: format!("Editor error: {}", err),
+                                                is_error: true,
+                                            });
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(AppEvent::MemoryCommandResult {
+                                        text: format!("No editor configured: {}", err),
+                                        is_error: true,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    "edit" if !arg.is_empty() => {
+                        let topic_name = arg.to_string();
+                        tokio::spawn(async move {
+                            let root = codex_home.join("memories");
+                            let topics_dir = root.join("topics");
+                            let safe_name = topic_name.to_lowercase()
+                                .replace(' ', "_")
+                                .replace(|c: char| !c.is_alphanumeric() && c != '_' && c != '-', "");
+                            let path = topics_dir.join(format!("{}.md", safe_name));
+                            let seed = match tokio::fs::read_to_string(&path).await {
+                                Ok(existing) => existing,
+                                Err(_) => format!(
+                                    "---\nname: {}\ndescription: \ntype: project\nkeywords: []\nsource: user\n---\n\n",
+                                    topic_name
+                                ),
+                            };
+                            match crate::external_editor::resolve_editor_command() {
+                                Ok(cmd) => {
+                                    match crate::external_editor::run_editor(&seed, &cmd).await {
+                                        Ok(content) => {
+                                            if let Err(err) = tokio::fs::write(&path, content).await {
+                                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                    text: format!("Failed to write topic: {}", err),
+                                                    is_error: true,
+                                                });
+                                            } else {
+                                                let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                    text: format!("Memory topic '{}' updated.", topic_name),
+                                                    is_error: false,
+                                                });
+                                            }
+                                        }
+                                        Err(err) => {
+                                            let _ = tx.send(AppEvent::MemoryCommandResult {
+                                                text: format!("Editor error: {}", err),
+                                                is_error: true,
+                                            });
+                                        }
+                                    }
+                                }
+                                Err(err) => {
+                                    let _ = tx.send(AppEvent::MemoryCommandResult {
+                                        text: format!("No editor configured: {}", err),
+                                        is_error: true,
+                                    });
+                                }
+                            }
+                        });
+                    }
+                    "clear" => {
+                        tokio::spawn(async move {
+                            let root = codex_home.join("memories");
+                            let topics_dir = root.join("topics");
+                            let mut count = 0usize;
+                            if let Ok(mut rd) = tokio::fs::read_dir(&topics_dir).await {
+                                while let Ok(Some(entry)) = rd.next_entry().await {
+                                    let path = entry.path();
+                                    if path.extension().and_then(|e| e.to_str()) == Some("md") {
+                                        if let Ok(()) = tokio::fs::remove_file(&path).await {
+                                            count += 1;
+                                        }
+                                    }
+                                }
+                            }
+                            let _ = tx.send(AppEvent::MemoryCommandResult {
+                                text: format!("Cleared {} memory topic(s).", count),
+                                is_error: false,
+                            });
+                        });
+                    }
+                    _ => {
+                        self.add_error_message(
+                            "Usage: /memories [list|add <topic>|edit <topic>|clear]".to_string(),
+                        );
+                    }
+                }
+            }
             _ => self.dispatch_command(cmd),
         }
         if source == SlashCommandDispatchSource::Live && cmd != SlashCommand::Goal {
@@ -926,4 +1095,32 @@ impl ChatWidget {
         self.bottom_pane.drain_pending_submission_state();
         false
     }
+}
+
+/// Parse a minimal topic header from markdown with YAML frontmatter.
+/// Returns (name, description) – description falls back to empty string.
+fn parse_memory_topic_header(content: &str) -> (String, String) {
+    let trimmed = content.trim_start();
+    let mut name = String::new();
+    let mut description = String::new();
+    if let Some(rest) = trimmed.strip_prefix("---") {
+        if let Some(end) = rest.find("\n---") {
+            let yaml = &rest[..end];
+            for line in yaml.lines() {
+                if let Some((key, val)) = line.split_once(':') {
+                    let key = key.trim();
+                    let val = val.trim().trim_matches('"').trim_matches('\'');
+                    if key == "name" {
+                        name = val.to_string();
+                    } else if key == "description" {
+                        description = val.to_string();
+                    }
+                }
+            }
+        }
+    }
+    if name.is_empty() {
+        name = "Untitled".to_string();
+    }
+    (name, description)
 }

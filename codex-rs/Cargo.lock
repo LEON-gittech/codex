@@ -2432,6 +2432,7 @@ dependencies = [
  "rmcp",
  "serde",
  "serde_json",
+ "serde_yaml",
  "serial_test",
  "sha1",
  "shlex",

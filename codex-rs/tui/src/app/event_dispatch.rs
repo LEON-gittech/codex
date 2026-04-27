@@ -679,6 +679,13 @@ impl App {
                     self.launch_external_editor(tui).await;
                 }
             }
+            AppEvent::MemoryCommandResult { text, is_error } => {
+                if is_error {
+                    self.chat_widget.add_error_message(text);
+                } else {
+                    self.chat_widget.add_info_message(text, /*hint*/ None);
+                }
+            }
             AppEvent::OpenWindowsSandboxEnablePrompt { preset } => {
                 self.chat_widget.open_windows_sandbox_enable_prompt(preset);
             }
