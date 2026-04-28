@@ -57,7 +57,7 @@ For context: [Zellij](https://github.com/zellij-org/zellij) is a terminal worksp
 
 ### 2. Stale turn output protection in the TUI
 
-From commits `642d306a7` and `6c27de579`:
+From commits `5800f4e9f` and `0b299d9bd`:
 
 - adds turn-aware filtering for streamed assistant output
 - prevents stale deltas from older turns from leaking into the currently active turn
