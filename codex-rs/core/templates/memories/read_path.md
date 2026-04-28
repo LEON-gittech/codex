@@ -10,9 +10,17 @@ memory files directly**, as they handle relevance scoring, truncation, and
 formatting automatically:
 
 - `memory_read` — Read the memory index, relevant topics, and notepad priority.
-  Use this when you need a broad overview or when starting a new task.
+  Use this when you need a broad overview or when starting a new task. This
+  tool combines the MEMORY.md index with the most relevant topics and notepad
+  priority into a single response.
 - `memory_search` — Search topics by query with relevance scoring. Use this
-  when looking for specific information across many topics.
+  when looking for specific information across many topics. This searches the
+  individual topic files under `topics/`, not the MEMORY.md index.
+
+**When to use which:** Start with `memory_read` for a broad overview. If you
+need more detail on a specific area, use `memory_search` with targeted keywords.
+Do NOT read MEMORY.md or topic files directly — the tools already cover both
+the index and the topic content.
 - `memory_write` — Create or update a memory topic with frontmatter.
 - `memory_add_note` — Append a timestamped note to an existing topic (creates
   the topic if it does not exist).
@@ -54,7 +62,8 @@ Memory layout (general -> specific):
 
 - {{ base_path }}/MEMORY.md (searchable registry; primary file to query)
 - {{ base_path }}/topics/ (individual topic files with YAML frontmatter)
-  - Each topic has: name, description, type, keywords, source
+  - Each topic has: name, description, type, keywords, source, priority
+  - Topics with `priority: high` appear in the Directives section below
   - Topics are scored by relevance to the current query
 - {{ base_path }}/notepad.md (structured scratchpad)
   - PRIORITY: current top-priority item (auto-injected into context)
@@ -162,6 +171,15 @@ rollout_summaries/2026-02-17T21-23-02-LN3m-weekly_memory_report_pivot_from_git_h
   - For every `citation_entries`, try to find and cite the corresponding rollout id if possible
 - Never include memory citations inside pull-request messages.
 - Never cite blank lines; double-check ranges.
+
+### Compaction Protocol
+
+Before context compaction, preserve critical state:
+1. Save key decisions and progress via `notepad_write_working`
+2. Write important facts to topics via `memory_add_note`
+3. If context is >80% full, proactively checkpoint state
+
+This ensures you can recover key information after compaction.
 
 ========= MEMORY_SUMMARY BEGINS =========
 {{ memory_summary }}

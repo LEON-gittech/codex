@@ -7,9 +7,11 @@
 //!
 //! Storage: `{codex_home}/memories/notepad.md`
 //! Writes use atomic rename (`tmp.{pid}` + `rename`) for crash safety.
+//! Concurrent access is guarded by a directory-based lock with stale detection.
 
 use std::path::Path;
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::Context;
 use chrono::Utc;
@@ -21,6 +23,12 @@ const PRIORITY_MAX_CHARS: usize = 500;
 
 /// Default number of days before WORKING MEMORY entries are pruned.
 const DEFAULT_PRUNE_DAYS: u64 = 7;
+
+/// Lock acquisition timeout in milliseconds.
+const LOCK_TIMEOUT_MS: u64 = 5000;
+
+/// Lock polling interval in milliseconds.
+const LOCK_POLL_MS: u64 = 100;
 
 /// Section header markers.
 const PRIORITY_HEADER: &str = "## PRIORITY";
@@ -124,6 +132,86 @@ async fn atomic_write(path: &Path, content: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// Directory-based file locking (inspired by oh-my-codex agents-overlay.ts)
+// ---------------------------------------------------------------------------
+
+/// Returns the lock directory path for the notepad under `root`.
+fn lock_dir(root: &Path) -> PathBuf {
+    root.join(".notepad.lock")
+}
+
+/// Acquire a directory-based lock with PID owner metadata and stale detection.
+///
+/// The lock is a directory created atomically via `mkdir`. If the directory
+/// already exists, the owner PID is checked: if the owner process is dead,
+/// the stale lock is reaped and we retry.
+async fn acquire_lock(root: &Path) -> anyhow::Result<()> {
+    let lock = lock_dir(root);
+    if let Some(parent) = lock.parent() {
+        fs::create_dir_all(parent).await.ok();
+    }
+
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_millis(LOCK_TIMEOUT_MS);
+
+    while start.elapsed() < timeout {
+        // Attempt atomic directory creation.
+        match fs::create_dir(&lock).await {
+            Ok(()) => {
+                // Write owner metadata for stale detection.
+                let owner = lock.join("owner.json");
+                let meta = format!(r#"{{"pid":{},"ts":{}}}"#, std::process::id(), start.elapsed().as_millis());
+                fs::write(&owner, meta).await.ok();
+                return Ok(());
+            }
+            Err(_) => {
+                // Lock exists — check if owner is dead.
+                let owner_path = lock.join("owner.json");
+                if let Ok(raw) = fs::read_to_string(&owner_path).await {
+                    if let Some(pid_str) = raw.split(r#""pid":"#).nth(1) {
+                        if let Some(end) = pid_str.find(',') {
+                            if let Ok(pid) = pid_str[..end].parse::<u32>() {
+                                // Check if PID is still alive (Unix: signal 0).
+                                #[cfg(unix)]
+                                {
+                                    if unsafe { libc::kill(pid as i32, 0) } != 0 {
+                                        // Owner is dead — reap stale lock.
+                                        fs::remove_dir_all(&lock).await.ok();
+                                        continue;
+                                    }
+                                }
+                                let _ = pid; // Silence unused warning on non-Unix.
+                            }
+                        }
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(LOCK_POLL_MS)).await;
+            }
+        }
+    }
+
+    anyhow::bail!("failed to acquire notepad lock within {}ms", LOCK_TIMEOUT_MS)
+}
+
+/// Release the directory-based lock.
+async fn release_lock(root: &Path) {
+    let lock = lock_dir(root);
+    fs::remove_dir_all(&lock).await.ok();
+}
+
+/// Execute a closure while holding the notepad lock.
+async fn with_notepad_lock<F, Fut, T>(root: &Path, f: F) -> anyhow::Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    acquire_lock(root).await?;
+    let result = f().await;
+    release_lock(root).await;
+    result
+}
+
 /// Read the notepad file, optionally filtering to a specific section.
 ///
 /// Returns `None` if the file doesn't exist.
@@ -160,110 +248,146 @@ pub async fn read_notepad(root: &Path, section: Option<NotepadSection>) -> Optio
 
 /// Write (replace) the PRIORITY section content.
 /// Content is truncated to `PRIORITY_MAX_CHARS` if it exceeds the limit.
+/// Acquires a file lock to prevent concurrent writes.
 pub async fn write_priority(root: &Path, content: &str) -> anyhow::Result<()> {
-    let path = notepad_path(root);
-    let truncated = if content.len() > PRIORITY_MAX_CHARS {
-        &content[..content.floor_char_boundary(PRIORITY_MAX_CHARS)]
-    } else {
-        content
-    };
+    let root = root.to_path_buf();
+    let content = content.to_string();
+    with_notepad_lock(&root, || {
+        let root = root.clone();
+        let content = content.clone();
+        async move {
+            let path = notepad_path(&root);
+            let truncated = if content.len() > PRIORITY_MAX_CHARS {
+                &content[..content.floor_char_boundary(PRIORITY_MAX_CHARS)]
+            } else {
+                &content
+            };
 
-    // Load existing sections to preserve WORKING and MANUAL.
-    let (.., working, manual) = if path.exists() {
-        let raw = fs::read_to_string(&path).await.unwrap_or_default();
-        parse_sections(&raw)
-    } else {
-        (String::new(), String::new(), String::new())
-    };
+            let (.., working, manual) = if path.exists() {
+                let raw = fs::read_to_string(&path).await.unwrap_or_default();
+                parse_sections(&raw)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
 
-    let new_content = build_notepad_content(truncated, &working, &manual);
-    atomic_write(&path, &new_content).await
+            let new_content = build_notepad_content(truncated, &working, &manual);
+            atomic_write(&path, &new_content).await
+        }
+    })
+    .await
 }
 
 /// Append a timestamped entry to the WORKING MEMORY section.
+/// Acquires a file lock to prevent concurrent writes.
 pub async fn append_working(root: &Path, entry: &str) -> anyhow::Result<()> {
-    let path = notepad_path(root);
-    let timestamp = Utc::now().to_rfc3339();
-    let new_entry = format!("[{timestamp}] {entry}");
+    let root = root.to_path_buf();
+    let entry = entry.to_string();
+    with_notepad_lock(&root, || {
+        let root = root.clone();
+        let entry = entry.clone();
+        async move {
+            let path = notepad_path(&root);
+            let timestamp = Utc::now().to_rfc3339();
+            let new_entry = format!("[{timestamp}] {entry}");
 
-    let (priority, mut working, manual) = if path.exists() {
-        let raw = fs::read_to_string(&path).await.unwrap_or_default();
-        parse_sections(&raw)
-    } else {
-        (String::new(), String::new(), String::new())
-    };
+            let (priority, mut working, manual) = if path.exists() {
+                let raw = fs::read_to_string(&path).await.unwrap_or_default();
+                parse_sections(&raw)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
 
-    if !working.is_empty() {
-        working.push('\n');
-    }
-    working.push_str(&new_entry);
+            if !working.is_empty() {
+                working.push('\n');
+            }
+            working.push_str(&new_entry);
 
-    let new_content = build_notepad_content(&priority, &working, &manual);
-    atomic_write(&path, &new_content).await
+            let new_content = build_notepad_content(&priority, &working, &manual);
+            atomic_write(&path, &new_content).await
+        }
+    })
+    .await
 }
 
 /// Append an entry to the MANUAL section (never auto-pruned).
+/// Acquires a file lock to prevent concurrent writes.
 pub async fn append_manual(root: &Path, entry: &str) -> anyhow::Result<()> {
-    let path = notepad_path(root);
+    let root = root.to_path_buf();
+    let entry = entry.to_string();
+    with_notepad_lock(&root, || {
+        let root = root.clone();
+        let entry = entry.clone();
+        async move {
+            let path = notepad_path(&root);
 
-    let (priority, working, mut manual) = if path.exists() {
-        let raw = fs::read_to_string(&path).await.unwrap_or_default();
-        parse_sections(&raw)
-    } else {
-        (String::new(), String::new(), String::new())
-    };
+            let (priority, working, mut manual) = if path.exists() {
+                let raw = fs::read_to_string(&path).await.unwrap_or_default();
+                parse_sections(&raw)
+            } else {
+                (String::new(), String::new(), String::new())
+            };
 
-    if !manual.is_empty() {
-        manual.push('\n');
-    }
-    manual.push_str(entry);
+            if !manual.is_empty() {
+                manual.push('\n');
+            }
+            manual.push_str(&entry);
 
-    let new_content = build_notepad_content(&priority, &working, &manual);
-    atomic_write(&path, &new_content).await
+            let new_content = build_notepad_content(&priority, &working, &manual);
+            atomic_write(&path, &new_content).await
+        }
+    })
+    .await
 }
 
 /// Prune WORKING MEMORY entries older than `max_age_days`.
+/// Acquires a file lock to prevent concurrent writes.
 ///
 /// Returns the number of entries removed.
 pub async fn prune_working(root: &Path, max_age_days: Option<u64>) -> anyhow::Result<usize> {
+    let root = root.to_path_buf();
     let max_days = max_age_days.unwrap_or(DEFAULT_PRUNE_DAYS);
-    let path = notepad_path(root);
+    with_notepad_lock(&root, || {
+        let root = root.clone();
+        async move {
+            let path = notepad_path(&root);
 
-    if !path.exists() {
-        return Ok(0);
-    }
-
-    let raw = fs::read_to_string(&path).await.unwrap_or_default();
-    let (priority, working, manual) = parse_sections(&raw);
-
-    let cutoff = Utc::now() - chrono::Duration::days(max_days as i64);
-    let mut retained = String::new();
-    let mut removed = 0usize;
-
-    for line in working.lines() {
-        let trimmed = line.trim();
-        // Parse timestamp from entries like "[2026-04-27T10:30:00+00:00] some note"
-        if let Some(ts_end) = trimmed.find("] ") {
-            let ts_str = &trimmed[1..ts_end];
-            if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
-                if ts.with_timezone(&Utc) < cutoff {
-                    removed += 1;
-                    continue;
-                }
+            if !path.exists() {
+                return Ok(0);
             }
-        }
-        if !retained.is_empty() {
-            retained.push('\n');
-        }
-        retained.push_str(line);
-    }
 
-    if removed > 0 {
-        let new_content = build_notepad_content(&priority, &retained, &manual);
-        atomic_write(&path, &new_content).await?;
-    }
+            let raw = fs::read_to_string(&path).await.unwrap_or_default();
+            let (priority, working, manual) = parse_sections(&raw);
 
-    Ok(removed)
+            let cutoff = Utc::now() - chrono::Duration::days(max_days as i64);
+            let mut retained = String::new();
+            let mut removed = 0usize;
+
+            for line in working.lines() {
+                let trimmed = line.trim();
+                if let Some(ts_end) = trimmed.find("] ") {
+                    let ts_str = &trimmed[1..ts_end];
+                    if let Ok(ts) = chrono::DateTime::parse_from_rfc3339(ts_str) {
+                        if ts.with_timezone(&Utc) < cutoff {
+                            removed += 1;
+                            continue;
+                        }
+                    }
+                }
+                if !retained.is_empty() {
+                    retained.push('\n');
+                }
+                retained.push_str(line);
+            }
+
+            if removed > 0 {
+                let new_content = build_notepad_content(&priority, &retained, &manual);
+                atomic_write(&path, &new_content).await?;
+            }
+
+            Ok(removed)
+        }
+    })
+    .await
 }
 
 /// Return notepad statistics: file size, entry counts per section, oldest/newest timestamps.

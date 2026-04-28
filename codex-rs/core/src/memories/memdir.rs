@@ -45,6 +45,10 @@ pub(crate) struct MemoryFrontmatter {
     pub keywords: Vec<String>,
     #[serde(default = "default_source")]
     pub source: String,
+    /// Directive priority: "high" directives are injected into the memory
+    /// overlay; "normal" (default) are only available via memory_search.
+    #[serde(default)]
+    pub priority: Option<String>,
     #[serde(default)]
     pub updated_at: Option<DateTime<Utc>>,
 }
@@ -108,6 +112,7 @@ pub(crate) fn parse_topic(path: &Path, raw: &str) -> (MemoryFrontmatter, String)
         r#type: default_memory_type(),
         keywords: Vec::new(),
         source: default_source(),
+        priority: None,
         updated_at: None,
     };
     (frontmatter, raw.to_string())
@@ -275,8 +280,29 @@ pub(crate) async fn build_memory_prompt_content(
         parts.push(format!("## Memory Index (MEMORY.md)\n{index}"));
     }
 
-    // 2. Topics.
+    // 2. High-priority directives (top 3) + topic scoring.
     let topics = scan_memory_topics(&root).await;
+    let high_directives: Vec<_> = topics
+        .iter()
+        .filter(|t| t.frontmatter.priority.as_deref() == Some("high"))
+        .take(3)
+        .collect();
+    if !high_directives.is_empty() {
+        let directive_lines: Vec<String> = high_directives
+            .iter()
+            .map(|t| {
+                let desc = if t.frontmatter.description.is_empty() {
+                    t.frontmatter.name.clone()
+                } else {
+                    t.frontmatter.description.clone()
+                };
+                format!("- **{}**: {}", t.frontmatter.name, desc)
+            })
+            .collect();
+        parts.push(format!("## Directives\n{}", directive_lines.join("\n")));
+    }
+
+    // 3. Topics (scored by relevance).
     if !topics.is_empty() {
         let mut scored: Vec<_> = topics
             .into_iter()

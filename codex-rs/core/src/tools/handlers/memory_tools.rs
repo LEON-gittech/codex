@@ -120,6 +120,9 @@ struct MemoryWriteArgs {
     keywords: Option<Vec<String>>,
     /// Topic content (markdown).
     content: String,
+    /// Merge with existing topic (true) or replace entirely (false, default).
+    #[serde(default)]
+    merge: bool,
 }
 
 fn default_memory_type() -> String {
@@ -147,23 +150,77 @@ impl ToolHandler for MemoryWriteHandler {
         let codex_home = &invocation.turn.config.codex_home;
         let root = crate::memories::memory_root(codex_home);
 
-        let frontmatter = memories::MemoryFrontmatter {
-            name: args.name.clone(),
-            description: args.description.unwrap_or_else(|| args.name.clone()),
-            r#type: args.memory_type,
-            keywords: args.keywords.unwrap_or_default(),
-            source: "agent".to_string(),
-            updated_at: Some(Utc::now()),
+        let (frontmatter, content) = if args.merge {
+            // Merge: read existing topic, keep its frontmatter fields unless overridden.
+            let topics = crate::memories::scan_memory_topics(&root).await;
+            let existing = topics.into_iter().find(|t| {
+                t.frontmatter.name.eq_ignore_ascii_case(&args.name)
+            });
+
+            if let Some(existing) = existing {
+                let merged_name = if args.name.is_empty() { existing.frontmatter.name.clone() } else { args.name.clone() };
+                let merged_desc = args.description.as_deref()
+                    .filter(|d| !d.is_empty())
+                    .unwrap_or(&existing.frontmatter.description)
+                    .to_string();
+                let merged_type = if args.memory_type == "project" && existing.frontmatter.r#type != "project" {
+                    existing.frontmatter.r#type.clone()
+                } else {
+                    args.memory_type.clone()
+                };
+                let merged_keywords = match args.keywords.as_ref() {
+                    Some(k) if !k.is_empty() => k.clone(),
+                    _ => existing.frontmatter.keywords.clone(),
+                };
+                let merged_priority = existing.frontmatter.priority.clone();
+
+                let merged_content = format!("{}\n\n{}", existing.content.trim_end(), args.content.trim());
+
+                let fm = memories::MemoryFrontmatter {
+                    name: merged_name,
+                    description: merged_desc,
+                    r#type: merged_type,
+                    keywords: merged_keywords,
+                    source: "agent".to_string(),
+                    priority: merged_priority,
+                    updated_at: Some(Utc::now()),
+                };
+                (fm, merged_content)
+            } else {
+                // No existing topic — fall through to create.
+                let fm = memories::MemoryFrontmatter {
+                    name: args.name.clone(),
+                    description: args.description.unwrap_or_else(|| args.name.clone()),
+                    r#type: args.memory_type.clone(),
+                    keywords: args.keywords.unwrap_or_default(),
+                    source: "agent".to_string(),
+                    priority: None,
+                    updated_at: Some(Utc::now()),
+                };
+                (fm, args.content.clone())
+            }
+        } else {
+            let fm = memories::MemoryFrontmatter {
+                name: args.name.clone(),
+                description: args.description.unwrap_or_else(|| args.name.clone()),
+                r#type: args.memory_type.clone(),
+                keywords: args.keywords.unwrap_or_default(),
+                source: "agent".to_string(),
+                priority: None,
+                updated_at: Some(Utc::now()),
+            };
+            (fm, args.content.clone())
         };
 
-        let path = memories::write_topic(&root, &args.name, &frontmatter, &args.content)
+        let path = memories::write_topic(&root, &args.name, &frontmatter, &content)
             .await
             .map_err(|e| {
                 FunctionCallError::RespondToModel(format!("failed to write memory topic: {e}"))
             })?;
 
+        let action = if args.merge { "merged into" } else { "written to" };
         Ok(FunctionToolOutput::from_text(
-            format!("Memory topic '{}' written to {}", args.name, path.display()),
+            format!("Memory topic '{}' {} {}", args.name, action, path.display()),
             Some(true),
         ))
     }
@@ -237,6 +294,7 @@ impl ToolHandler for MemoryAddNoteHandler {
                 r#type: "project".to_string(),
                 keywords: Vec::new(),
                 source: "agent".to_string(),
+                priority: None,
                 updated_at: Some(Utc::now()),
             };
             let content = note_with_ts.trim_start().to_string();

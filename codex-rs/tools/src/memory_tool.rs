@@ -59,13 +59,20 @@ pub fn create_memory_write_tool() -> ToolSpec {
             "content".to_string(),
             JsonSchema::string(Some("Topic content in markdown.".to_string())),
         ),
+        (
+            "merge".to_string(),
+            JsonSchema::boolean(Some(
+                "Merge with existing topic (true) or replace entirely (false, default). When merging, existing frontmatter fields are kept unless overridden, and content is appended.".to_string(),
+            )),
+        ),
     ]);
 
     ToolSpec::Function(ResponsesApiTool {
         name: "memory_write".to_string(),
         description:
             "Write or update a memory topic file. Creates a new topic or overwrites an existing one \
-             with the same name."
+             with the same name. Set merge=true to preserve existing frontmatter and append content \
+             instead of replacing."
                 .to_string(),
         strict: false,
         defer_loading: None,

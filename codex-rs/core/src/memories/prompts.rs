@@ -163,11 +163,19 @@ pub(super) fn build_stage_one_input_message(
     ])?)
 }
 
+/// Maximum character budget for the rendered developer instructions.
+/// Matches the oh-my-codex overlay budget of 3500 chars.
+const MAX_DEVELOPER_INSTRUCTIONS_CHARS: usize = 3500;
+
 /// Build prompt used for read path. This prompt must be added to the developer instructions.
 ///
 /// The new memdir layout is tried first (`topics/` + `MEMORY.md`). If no topics exist, the
 /// legacy `memory_summary.md` is used as a fallback. If a notepad with PRIORITY content
 /// exists, it is appended as an additional section.
+///
+/// The final rendered output is capped at `MAX_DEVELOPER_INSTRUCTIONS_CHARS` characters.
+/// If the template shell + memory_summary exceeds the budget, the memory_summary is
+/// truncated to fit while preserving the template structure.
 pub(crate) async fn build_memory_tool_developer_instructions(
     codex_home: &AbsolutePathBuf,
     query: &str,
@@ -213,12 +221,35 @@ pub(crate) async fn build_memory_tool_developer_instructions(
         (None, None) => return None,
     };
 
-    MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
+    let rendered = MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
         .render([
             ("base_path", base_path_str.as_str()),
             ("memory_summary", combined.as_str()),
         ])
-        .ok()
+        .ok()?;
+
+    // Cap the rendered output to the budget.
+    if rendered.len() <= MAX_DEVELOPER_INSTRUCTIONS_CHARS {
+        Some(rendered)
+    } else {
+        // Truncate the memory_summary to fit. Estimate the template shell size
+        // by rendering with an empty summary, then compute the remaining budget.
+        let shell = MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
+            .render([
+                ("base_path", base_path_str.as_str()),
+                ("memory_summary", ""),
+            ])
+            .unwrap_or_default();
+        let summary_budget = MAX_DEVELOPER_INSTRUCTIONS_CHARS.saturating_sub(shell.len());
+        let truncated_summary: String = combined.chars().take(summary_budget).collect();
+        MEMORY_TOOL_DEVELOPER_INSTRUCTIONS_TEMPLATE
+            .render([
+                ("base_path", base_path_str.as_str()),
+                ("memory_summary", truncated_summary.as_str()),
+            ])
+            .ok()
+            .map(|s| s.chars().take(MAX_DEVELOPER_INSTRUCTIONS_CHARS).collect())
+    }
 }
 
 #[cfg(test)]
