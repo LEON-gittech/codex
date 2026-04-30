@@ -576,6 +576,10 @@ impl HistoryCell for UpdateAvailableHistoryCell {
     fn display_lines(&self, width: u16) -> Vec<Line<'static>> {
         use ratatui_macros::line;
         use ratatui_macros::text;
+        let release_notes_url = self
+            .update_action
+            .map(UpdateAction::release_notes_url)
+            .unwrap_or("https://github.com/openai/codex/releases/latest");
         let update_instruction = if let Some(update_action) = self.update_action {
             line!["Run ", update_action.command_str().cyan(), " to update."]
         } else {
@@ -596,9 +600,7 @@ impl HistoryCell for UpdateAvailableHistoryCell {
             update_instruction,
             "",
             "See full release notes:",
-            "https://github.com/openai/codex/releases/latest"
-                .cyan()
-                .underlined(),
+            release_notes_url.cyan().underlined(),
         ];
 
         let inner_width = content
@@ -3279,6 +3281,18 @@ mod tests {
     fn ps_output_empty_snapshot() {
         let cell = new_unified_exec_processes_output(Vec::new());
         let rendered = render_lines(&cell.display_lines(/*width*/ 60)).join("\n");
+        insta::assert_snapshot!(rendered);
+    }
+
+    #[test]
+    fn update_available_history_cell_snapshot() {
+        let cell = UpdateAvailableHistoryCell::new(
+            "NEXT_VERSION".to_string(),
+            Some(UpdateAction::NpmGlobalLatest),
+        );
+        let rendered = render_lines(&cell.display_lines(/*width*/ 80)).join("\n");
+        let current_version = CODEX_CLI_VERSION.to_string();
+        let rendered = rendered.replace(&current_version, "CURRENT_VERSION");
         insta::assert_snapshot!(rendered);
     }
 

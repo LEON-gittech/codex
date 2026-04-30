@@ -187,6 +187,7 @@ impl WidgetRef for &UpdatePromptScreen {
         let mut column = ColumnRenderable::new();
 
         let update_command = self.update_action.command_str();
+        let release_notes_url = self.update_action.release_notes_url();
 
         column.push("");
         column.push(Line::from(vec![
@@ -204,9 +205,7 @@ impl WidgetRef for &UpdatePromptScreen {
         column.push(
             Line::from(vec![
                 "Release notes: ".dim(),
-                "https://github.com/openai/codex/releases/latest"
-                    .dim()
-                    .underlined(),
+                release_notes_url.dim().underlined(),
             ])
             .inset(Insets::tlbr(0, 2, 0, 0)),
         );
@@ -250,11 +249,13 @@ mod tests {
     use ratatui::Terminal;
 
     fn new_prompt() -> UpdatePromptScreen {
-        UpdatePromptScreen::new(
+        let mut screen = UpdatePromptScreen::new(
             FrameRequester::test_dummy(),
-            "9.9.9".into(),
+            "NEXT_VERSION".into(),
             UpdateAction::NpmGlobalLatest,
-        )
+        );
+        screen.current_version = "CURRENT_VERSION".into();
+        screen
     }
 
     #[test]

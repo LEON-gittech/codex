@@ -3,12 +3,15 @@ use codex_install_context::InstallContext;
 #[cfg(any(not(debug_assertions), test))]
 use codex_install_context::StandalonePlatform;
 
+const OPEN_CODEX_RELEASE_NOTES_URL: &str = "https://github.com/LEON-gittech/codex";
+const UPSTREAM_CODEX_RELEASE_NOTES_URL: &str = "https://github.com/openai/codex/releases/latest";
+
 /// Update action the CLI should perform after the TUI exits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UpdateAction {
-    /// Update via `npm install -g @openai/codex@latest`.
+    /// Update via `npm install -g @leonw24/open-codex@latest`.
     NpmGlobalLatest,
-    /// Update via `bun install -g @openai/codex@latest`.
+    /// Update via `bun install -g @leonw24/open-codex@latest`.
     BunGlobalLatest,
     /// Update via `brew upgrade codex`.
     BrewUpgrade,
@@ -36,8 +39,8 @@ impl UpdateAction {
     /// Returns the list of command-line arguments for invoking the update.
     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
         match self {
-            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
-            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+            UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@leonw24/open-codex@latest"]),
+            UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@leonw24/open-codex@latest"]),
             UpdateAction::BrewUpgrade => ("brew", &["upgrade", "--cask", "codex"]),
             UpdateAction::StandaloneUnix => (
                 "sh",
@@ -47,6 +50,15 @@ impl UpdateAction {
                 "powershell",
                 &["-c", "irm https://chatgpt.com/codex/install.ps1|iex"],
             ),
+        }
+    }
+
+    pub fn release_notes_url(self) -> &'static str {
+        match self {
+            UpdateAction::NpmGlobalLatest | UpdateAction::BunGlobalLatest => OPEN_CODEX_RELEASE_NOTES_URL,
+            UpdateAction::BrewUpgrade
+            | UpdateAction::StandaloneUnix
+            | UpdateAction::StandaloneWindows => UPSTREAM_CODEX_RELEASE_NOTES_URL,
         }
     }
 
@@ -108,6 +120,34 @@ mod tests {
     }
 
     #[test]
+    fn npm_and_bun_update_commands_use_open_codex_package() {
+        assert_eq!(
+            UpdateAction::NpmGlobalLatest.command_args(),
+            ("npm", &["install", "-g", "@leonw24/open-codex@latest"][..])
+        );
+        assert_eq!(
+            UpdateAction::BunGlobalLatest.command_args(),
+            ("bun", &["install", "-g", "@leonw24/open-codex@latest"][..])
+        );
+    }
+
+    #[test]
+    fn release_notes_url_matches_install_channel() {
+        assert_eq!(
+            UpdateAction::NpmGlobalLatest.release_notes_url(),
+            OPEN_CODEX_RELEASE_NOTES_URL
+        );
+        assert_eq!(
+            UpdateAction::BunGlobalLatest.release_notes_url(),
+            OPEN_CODEX_RELEASE_NOTES_URL
+        );
+        assert_eq!(
+            UpdateAction::BrewUpgrade.release_notes_url(),
+            UPSTREAM_CODEX_RELEASE_NOTES_URL
+        );
+    }
+
+    #[test]
     fn standalone_update_commands_rerun_latest_installer() {
         assert_eq!(
             UpdateAction::StandaloneUnix.command_args(),
@@ -125,3 +165,4 @@ mod tests {
         );
     }
 }
+

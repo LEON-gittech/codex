@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[cfg(not(debug_assertions))]
-pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@openai%2fcodex";
+pub(crate) const PACKAGE_URL: &str = "https://registry.npmjs.org/@leonw24%2fopen-codex";
 
 #[derive(Deserialize, Debug, Clone)]
 pub(crate) struct NpmPackageInfo {
@@ -22,22 +22,15 @@ struct NpmPackageDist {
     integrity: Option<String>,
 }
 
-pub(crate) fn ensure_version_ready(
-    package_info: &NpmPackageInfo,
-    version: &str,
-) -> anyhow::Result<()> {
-    let version = version.trim();
+pub(crate) fn latest_version(package_info: &NpmPackageInfo) -> anyhow::Result<&str> {
+    let latest = package_info
+        .dist_tags
+        .get("latest")
+        .map(String::as_str)
+        .ok_or_else(|| anyhow::anyhow!("npm package is missing latest dist-tag"))?;
 
-    match package_info.dist_tags.get("latest").map(String::as_str) {
-        Some(latest) if latest == version => {}
-        Some(latest) => anyhow::bail!(
-            "npm latest dist-tag points to {latest}, expected GitHub release {version}"
-        ),
-        None => anyhow::bail!("npm package is missing latest dist-tag"),
-    }
-
-    version_info_with_dist(package_info, version)?;
-    Ok(())
+    version_info_with_dist(package_info, latest)?;
+    Ok(latest)
 }
 
 fn version_info_with_dist<'a>(
@@ -76,39 +69,42 @@ mod tests {
         serde_json::json!({
             "dist": {
                 "integrity": format!("sha512-{version}"),
-                "tarball": format!("https://registry.npmjs.org/@openai/codex/-/codex-{version}.tgz"),
+                "tarball": format!("https://registry.npmjs.org/@leonw24/open-codex/-/open-codex-{version}.tgz"),
             }
         })
     }
 
-    fn package_info(github_latest: &str, npm_latest: &str) -> NpmPackageInfo {
+    fn package_info(latest: &str, published_versions: &[&str]) -> NpmPackageInfo {
         let mut versions = serde_json::Map::new();
-        versions.insert(github_latest.to_string(), version_json(github_latest));
+        for version in published_versions {
+            versions.insert((*version).to_string(), version_json(version));
+        }
 
         serde_json::from_value(serde_json::json!({
-            "dist-tags": { "latest": npm_latest },
+            "dist-tags": { "latest": latest },
             "versions": serde_json::Value::Object(versions),
         }))
         .expect("valid npm package metadata")
     }
 
     #[test]
-    fn ready_version_requires_latest_dist_tag_and_root_dist() {
+    fn latest_version_requires_latest_dist_tag_and_root_dist() {
         let latest = "1.2.3";
-        let package_info = package_info(latest, latest);
+        let package_info = package_info(latest, &[latest]);
 
-        ensure_version_ready(&package_info, latest).expect("npm package is ready");
+        assert_eq!(
+            latest_version(&package_info).expect("npm package is ready"),
+            latest
+        );
     }
 
     #[test]
-    fn ready_version_rejects_stale_latest_dist_tag() {
-        let package_info = package_info("1.2.3", "1.2.2");
+    fn latest_version_returns_latest_dist_tag_value() {
+        let package_info = package_info("1.2.2", &["1.2.2", "1.2.3"]);
 
-        let err = ensure_version_ready(&package_info, "1.2.3")
-            .expect_err("npm latest dist-tag must match GitHub latest");
-        assert!(
-            err.to_string().contains("latest dist-tag"),
-            "error should name stale latest dist-tag: {err}"
+        assert_eq!(
+            latest_version(&package_info).expect("latest dist-tag should drive version"),
+            "1.2.2"
         );
     }
 
@@ -120,7 +116,7 @@ mod tests {
         }))
         .expect("valid npm package metadata");
 
-        let err = ensure_version_ready(&package_info, "1.2.3")
+        let err = latest_version(&package_info)
             .expect_err("root package must have dist metadata");
         assert!(
             err.to_string().contains("missing dist metadata"),
